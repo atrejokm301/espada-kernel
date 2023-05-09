@@ -27,6 +27,7 @@
 #include <linux/mmu_context.h>
 #include <linux/context_tracking.h>
 #include <trace/events/power.h>
+#include <trace/events/ipi.h>
 #include <trace/hooks/cpuidle.h>
 
 #include "cpuidle.h"
@@ -40,6 +41,59 @@ LIST_HEAD(cpuidle_detected_devices);
 static int enabled_devices;
 static int off __read_mostly;
 static int initialized __read_mostly;
+
+#ifdef CONFIG_SMP
+/*
+ * Bitmask of CPUs that are inside the idle loop with IRQs disabled, i.e.
+ * selecting or sleeping in a cpuidle state. do_idle() sets a CPU's bit before
+ * the governor runs and the bit is cleared as soon as the state's enter()
+ * callback returns, so a CPU latency QoS change only IPIs CPUs that would
+ * otherwise sleep through it.
+ */
+static atomic_long_t cpuidle_idled_cpus = ATOMIC_LONG_INIT(0);
+
+#if NR_CPUS > BITS_PER_LONG
+#error "cpuidle_idled_cpus cannot hold NR_CPUS bits"
+#endif
+
+void cpuidle_set_idle_cpu(unsigned int cpu)
+{
+	atomic_long_or(BIT(cpu), &cpuidle_idled_cpus);
+	/*
+	 * Pairs with the smp_mb() in cpuidle_wake_idle_cpus(): either the
+	 * governor on this CPU observes the new QoS constraint, or the updater
+	 * observes this CPU's bit and sends it an IPI.
+	 */
+	smp_mb__after_atomic();
+}
+
+void cpuidle_clear_idle_cpu(unsigned int cpu)
+{
+	atomic_long_andnot(BIT(cpu), &cpuidle_idled_cpus);
+}
+
+/**
+ * cpuidle_wake_idle_cpus - kick idle CPUs so they re-evaluate their idle state
+ *
+ * Replaces wake_up_all_idle_cpus() for CPU latency QoS changes. Only CPUs
+ * that are actually in (or entering) an idle state get a bare reschedule
+ * IPI: it ends the sleeping instruction without setting TIF_NEED_RESCHED, so
+ * the idle loop just selects a new state instead of going through
+ * schedule().
+ */
+void cpuidle_wake_idle_cpus(void)
+{
+	unsigned long cpus;
+	unsigned int cpu;
+
+	/* Pairs with smp_mb__after_atomic() in cpuidle_set_idle_cpu(). */
+	smp_mb();
+	cpus = atomic_long_read(&cpuidle_idled_cpus) &
+	       *cpumask_bits(cpu_online_mask);
+	for_each_set_bit(cpu, &cpus, NR_CPUS)
+		smp_send_reschedule(cpu);
+}
+#endif
 
 int cpuidle_disabled(void)
 {
@@ -283,6 +337,9 @@ noinstr int cpuidle_enter_state(struct cpuidle_device *dev,
 		ct_cpuidle_exit();
 	}
 	start_critical_timings();
+
+	/* Awake again: stop CPU latency QoS changes from IPIing this CPU. */
+	cpuidle_clear_idle_cpu(dev->cpu);
 
 	sched_clock_idle_wakeup_event();
 	time_end = ns_to_ktime(local_clock_noinstr());

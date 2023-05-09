@@ -355,4 +355,14 @@ extern s64 cpuidle_governor_latency_req(unsigned int cpu);
 #define CPU_PM_CPU_IDLE_ENTER_RETENTION_PARAM_RCU(low_level_idle_enter, idx, state)	\
 	__CPU_PM_CPU_IDLE_ENTER(low_level_idle_enter, idx, state, 1, 1)
 
+#if defined(CONFIG_CPU_IDLE) && defined(CONFIG_SMP)
+extern void cpuidle_set_idle_cpu(unsigned int cpu);
+extern void cpuidle_clear_idle_cpu(unsigned int cpu);
+extern void cpuidle_wake_idle_cpus(void);
+#else
+static inline void cpuidle_set_idle_cpu(unsigned int cpu) { }
+static inline void cpuidle_clear_idle_cpu(unsigned int cpu) { }
+static inline void cpuidle_wake_idle_cpus(void) { }
+#endif
+
 #endif /* _LINUX_CPUIDLE_H */

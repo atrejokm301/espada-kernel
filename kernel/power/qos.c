@@ -34,6 +34,7 @@
 #include <linux/kernel.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
+#include <linux/cpuidle.h>
 
 #include <linux/uaccess.h>
 #include <linux/export.h>
@@ -252,7 +253,7 @@ static void cpu_latency_qos_apply(struct pm_qos_request *req,
 {
 	int ret = pm_qos_update_target(req->qos, &req->node, action, value);
 	if (ret > 0)
-		wake_up_all_idle_cpus();
+		cpuidle_wake_idle_cpus();
 }
 
 /**

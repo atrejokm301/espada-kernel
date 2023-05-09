@@ -330,6 +330,11 @@ static void do_idle(void)
 			arch_cpu_idle_dead();
 		}
 
+		/*
+		 * From here until the idle call returns, a CPU latency QoS
+		 * change must IPI this CPU so the governor runs again.
+		 */
+		cpuidle_set_idle_cpu(cpu);
 		arch_cpu_idle_enter();
 		rcu_nocb_flush_deferred_wakeup();
 
@@ -345,6 +350,7 @@ static void do_idle(void)
 		} else {
 			cpuidle_idle_call(got_tick);
 		}
+		cpuidle_clear_idle_cpu(cpu);
 		got_tick = tick_nohz_idle_got_tick();
 		arch_cpu_idle_exit();
 	}

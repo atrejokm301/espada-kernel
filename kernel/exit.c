@@ -882,10 +882,13 @@ static void synchronize_group_exit(struct task_struct *tsk, long code)
 	spin_unlock_irq(&sighand->siglock);
 }
 
+void dead_special_task(void);
 void __noreturn do_exit(long code)
 {
 	struct task_struct *tsk = current;
 	int group_dead;
+
+	dead_special_task();
 
 	WARN_ON(irqs_disabled());
 

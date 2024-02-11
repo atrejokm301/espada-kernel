@@ -88,6 +88,31 @@ static int bprm_creds_from_file(struct linux_binprm *bprm);
 
 int suid_dumpable = 0;
 
+#define LIBPERFMGR_BIN "/vendor/bin/hw/android.hardware.power-service.pixel-libperfmgr"
+
+static struct task_struct *libperfmgr_tsk;
+bool task_is_libperfmgr(struct task_struct *p);
+bool task_is_libperfmgr(struct task_struct *p)
+{
+	struct task_struct *tsk;
+	bool ret;
+
+	rcu_read_lock();
+	tsk = READ_ONCE(libperfmgr_tsk);
+	ret = tsk && same_thread_group(p, tsk);
+	rcu_read_unlock();
+
+	return ret;
+}
+
+/* Called from do_exit() so the saved task pointer never dangles */
+void dead_special_task(void);
+void dead_special_task(void)
+{
+	if (unlikely(current == READ_ONCE(libperfmgr_tsk)))
+		WRITE_ONCE(libperfmgr_tsk, NULL);
+}
+
 static LIST_HEAD(formats);
 static DEFINE_RWLOCK(binfmt_lock);
 
@@ -1911,6 +1936,12 @@ static int bprm_execve(struct linux_binprm *bprm)
 		goto out;
 
 	sched_mm_cid_after_execve(current);
+
+	if (is_global_init(current->parent)) {
+		if (unlikely(!strcmp(bprm->filename, LIBPERFMGR_BIN)))
+			WRITE_ONCE(libperfmgr_tsk, current);
+	}
+
 	/* execve succeeded */
 	current->in_execve = 0;
 	rseq_execve(current);

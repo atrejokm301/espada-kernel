@@ -12,6 +12,8 @@ struct ufs_hba_priv {
 	bool zwor_sup;
 	/* synchronizes PM QoS request and status updates */
 	struct mutex pm_qos_mutex;
+	/* hba->dev_cmd.complete points here for the lifetime of the host */
+	struct completion dev_cmd_compl;
 };
 
 static inline struct ufs_hba_priv *to_hba_priv(struct ufs_hba *hba)

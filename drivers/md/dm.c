@@ -2031,7 +2031,8 @@ static void dm_split_and_process_bio(struct mapped_device *md,
 	init_clone_info(&ci, io, map, bio, is_abnormal);
 
 	if (unlikely((bio->bi_opf & REQ_PREFLUSH) != 0)) {
-		if (map->flush_bypasses_map && dm_table_has_one_device(map))
+		if (bio->bi_iter.bi_size && map->flush_bypasses_map &&
+		    dm_table_has_one_device(map))
 			goto send_preflush_with_data;
 		__send_empty_flush(&ci);
 		/* dm_io_complete submits any data associated with flush */

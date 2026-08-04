@@ -2046,8 +2046,16 @@ static int comp_params_store(struct zram *zram, u32 prio, s32 level,
 
 	if (dict_path) {
 		sz = read_comp_algo_dictionary(&zram->params[prio].dict, dict_path);
-		if (sz < 0)
+		if (sz < 0) {
+			pr_err("failed to load dictionary %s (err=%zd)\n",
+			       dict_path, sz);
+			return sz;
+		}
+		if (sz == 0) {
+			pr_err("failed to load dictionary %s (empty file)\n",
+			       dict_path);
 			return -EINVAL;
+		}
 	}
 
 	zram->params[prio].dict_sz = sz;

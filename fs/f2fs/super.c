@@ -2672,7 +2672,9 @@ static int f2fs_remount(struct super_block *sb, int *flags, char *data)
 
 		set_sbi_flag(sbi, SBI_IS_DIRTY);
 		set_sbi_flag(sbi, SBI_IS_CLOSE);
-		f2fs_sync_fs(sb, 1);
+		err = f2fs_sync_fs(sb, 1);
+		if (err)
+			goto restore_gc;
 		clear_sbi_flag(sbi, SBI_IS_CLOSE);
 	}
 

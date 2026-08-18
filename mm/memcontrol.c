@@ -1803,7 +1803,12 @@ static bool consume_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 	stock = this_cpu_ptr(&memcg_stock);
 	stock_pages = READ_ONCE(stock->nr_pages);
 	if (memcg == READ_ONCE(stock->cached) && stock_pages >= nr_pages) {
-		WRITE_ONCE(stock->nr_pages, stock_pages - nr_pages);
+		stock_pages -= nr_pages;
+		WRITE_ONCE(stock->nr_pages, stock_pages);
+		if (!stock_pages) {
+			css_put(&memcg->css);
+			WRITE_ONCE(stock->cached, NULL);
+		}
 		ret = true;
 	}
 

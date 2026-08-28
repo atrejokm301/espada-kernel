@@ -93,25 +93,42 @@ int vmpressure_notifier_unregister(struct notifier_block *nb)
 	return blocking_notifier_chain_unregister(&vmpressure_notifier, nb);
 }
 
-/* pages scanned by direct reclaim (allocating tasks stalling) since the last root window */
-static atomic_long_t vmpressure_root_stall;
+/*
+ * ES301 global window (Sultan's global_vmpressure equivalent). Every
+ * vmpressure() call is accounted here regardless of memcg or the tree flag:
+ * with MGLRU the global reclaim path only reports per-memcg (tree=false)
+ * efficiency, which upstream discards for the root, so the root memcg's own
+ * window never closes. Pages scanned by direct reclaim count as "stall".
+ */
 #define VMPRESSURE_ALLOCSTALL_THRESHOLD	70
+static DEFINE_SPINLOCK(vmpressure_global_lock);
+static unsigned long vmpressure_global_scanned;
+static unsigned long vmpressure_global_reclaimed;
+static unsigned long vmpressure_global_stall;
+static unsigned long vmpressure_notify_scanned;
+static unsigned long vmpressure_notify_reclaimed;
+static unsigned long vmpressure_notify_stall;
 
-static void vmpressure_notify(unsigned long scanned, unsigned long reclaimed)
+static void vmpressure_global_work_fn(struct work_struct *work)
 {
-	unsigned long scale = scanned + reclaimed;
-	unsigned long stall = atomic_long_xchg(&vmpressure_root_stall, 0);
-	unsigned long pressure;
+	unsigned long scanned, reclaimed, stall, scale, pressure;
 
-	/* same arithmetic as vmpressure_calc_level(), scanned > 0 here */
+	spin_lock(&vmpressure_global_lock);
+	scanned = vmpressure_notify_scanned;
+	reclaimed = vmpressure_notify_reclaimed;
+	stall = vmpressure_notify_stall;
+	spin_unlock(&vmpressure_global_lock);
+	if (!scanned)
+		return;
+
+	/* same arithmetic as vmpressure_calc_level() */
+	scale = scanned + reclaimed;
 	pressure = scale - (reclaimed * scale / scanned);
 	pressure = pressure * 100 / scale;
-
 	/*
 	 * Sultan's vmpressure_account_stall(): once reclaim is mostly failing,
-	 * scale the pressure by how much of the window was direct reclaim, so
-	 * it reaches 100 (Simple LMK's trigger) when the allocating tasks are
-	 * the ones stalling, rather than only when MemAvailable hits zero.
+	 * scale by how much of the window was direct reclaim so it reaches 100
+	 * (Simple LMK's trigger) when the allocating tasks are the ones stalling.
 	 */
 	if (pressure >= VMPRESSURE_ALLOCSTALL_THRESHOLD) {
 		stall = min(stall, scanned);
@@ -119,15 +136,30 @@ static void vmpressure_notify(unsigned long scanned, unsigned long reclaimed)
 	}
 	blocking_notifier_call_chain(&vmpressure_notifier, pressure, NULL);
 }
+static DECLARE_WORK(vmpressure_global_work, vmpressure_global_work_fn);
 
-static inline void vmpressure_stall_add(struct vmpressure *vmpr, unsigned long scanned)
+static void vmpressure_global_account(unsigned long scanned, unsigned long reclaimed)
 {
-	if (!current_is_kswapd() && !vmpressure_parent(vmpr))
-		atomic_long_add(scanned, &vmpressure_root_stall);
+	bool fire = false;
+
+	spin_lock(&vmpressure_global_lock);
+	vmpressure_global_scanned += scanned;
+	vmpressure_global_reclaimed += reclaimed;
+	if (!current_is_kswapd())
+		vmpressure_global_stall += scanned;
+	if (vmpressure_global_scanned >= vmpressure_win) {
+		vmpressure_notify_scanned = vmpressure_global_scanned;
+		vmpressure_notify_reclaimed = vmpressure_global_reclaimed;
+		vmpressure_notify_stall = vmpressure_global_stall;
+		vmpressure_global_scanned = vmpressure_global_reclaimed = vmpressure_global_stall = 0;
+		fire = true;
+	}
+	spin_unlock(&vmpressure_global_lock);
+	if (fire)
+		schedule_work(&vmpressure_global_work);
 }
 #else
-static inline void vmpressure_notify(unsigned long scanned, unsigned long reclaimed) { }
-static inline void vmpressure_stall_add(struct vmpressure *vmpr, unsigned long scanned) { }
+static inline void vmpressure_global_account(unsigned long scanned, unsigned long reclaimed) { }
 #endif
 
 static struct vmpressure *vmpressure_parent(struct vmpressure *vmpr)
@@ -266,10 +298,6 @@ static void vmpressure_work_fn(struct work_struct *work)
 
 	level = vmpressure_calc_level(scanned, reclaimed);
 
-	/* ES301: system-wide pressure = the root memcg's window */
-	if (!vmpressure_parent(vmpr))
-		vmpressure_notify(scanned, reclaimed);
-
 	do {
 		if (vmpressure_event(vmpr, level, ancestor, signalled))
 			signalled = true;
@@ -341,8 +369,10 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 	if (!scanned)
 		return;
 
+	/* ES301: global window for Simple LMK, before the per-memcg bookkeeping */
+	vmpressure_global_account(scanned, reclaimed);
+
 	if (tree) {
-		vmpressure_stall_add(vmpr, scanned);
 		spin_lock(&vmpr->sr_lock);
 		scanned = vmpr->tree_scanned += scanned;
 		vmpr->tree_reclaimed += reclaimed;

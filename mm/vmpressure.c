@@ -72,6 +72,8 @@ static struct vmpressure *work_to_vmpressure(struct work_struct *work)
 	return container_of(work, struct vmpressure, work);
 }
 
+static struct vmpressure *vmpressure_parent(struct vmpressure *vmpr);
+
 #ifdef CONFIG_ANDROID_SIMPLE_LMK
 /*
  * ES301: Simple LMK (Sultan) wants a system-wide "pressure" percentage
@@ -91,18 +93,41 @@ int vmpressure_notifier_unregister(struct notifier_block *nb)
 	return blocking_notifier_chain_unregister(&vmpressure_notifier, nb);
 }
 
+/* pages scanned by direct reclaim (allocating tasks stalling) since the last root window */
+static atomic_long_t vmpressure_root_stall;
+#define VMPRESSURE_ALLOCSTALL_THRESHOLD	70
+
 static void vmpressure_notify(unsigned long scanned, unsigned long reclaimed)
 {
 	unsigned long scale = scanned + reclaimed;
+	unsigned long stall = atomic_long_xchg(&vmpressure_root_stall, 0);
 	unsigned long pressure;
 
 	/* same arithmetic as vmpressure_calc_level(), scanned > 0 here */
 	pressure = scale - (reclaimed * scale / scanned);
 	pressure = pressure * 100 / scale;
+
+	/*
+	 * Sultan's vmpressure_account_stall(): once reclaim is mostly failing,
+	 * scale the pressure by how much of the window was direct reclaim, so
+	 * it reaches 100 (Simple LMK's trigger) when the allocating tasks are
+	 * the ones stalling, rather than only when MemAvailable hits zero.
+	 */
+	if (pressure >= VMPRESSURE_ALLOCSTALL_THRESHOLD) {
+		stall = min(stall, scanned);
+		pressure += (100 - pressure) * stall / scanned;
+	}
 	blocking_notifier_call_chain(&vmpressure_notifier, pressure, NULL);
+}
+
+static inline void vmpressure_stall_add(struct vmpressure *vmpr, unsigned long scanned)
+{
+	if (!current_is_kswapd() && !vmpressure_parent(vmpr))
+		atomic_long_add(scanned, &vmpressure_root_stall);
 }
 #else
 static inline void vmpressure_notify(unsigned long scanned, unsigned long reclaimed) { }
+static inline void vmpressure_stall_add(struct vmpressure *vmpr, unsigned long scanned) { }
 #endif
 
 static struct vmpressure *vmpressure_parent(struct vmpressure *vmpr)
@@ -317,6 +342,7 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 		return;
 
 	if (tree) {
+		vmpressure_stall_add(vmpr, scanned);
 		spin_lock(&vmpr->sr_lock);
 		scanned = vmpr->tree_scanned += scanned;
 		vmpr->tree_reclaimed += reclaimed;

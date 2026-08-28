@@ -488,6 +488,18 @@ static const struct kernel_param_ops simple_lmk_init_ops = {
 	.set = simple_lmk_init_set
 };
 
+/*
+ * ES301: PSI-mode lmkd on Android 16 never writes lowmemorykiller.minfree,
+ * so the module_param trigger below would leave Simple LMK dormant. Start
+ * unconditionally once the system is up; the param callback stays as a no-op
+ * second trigger.
+ */
+static int __init simple_lmk_late_init(void)
+{
+	return simple_lmk_init_set(NULL, NULL);
+}
+late_initcall(simple_lmk_late_init);
+
 /* Needed to prevent Android from thinking there's no LMK and thus rebooting */
 #undef MODULE_PARAM_PREFIX
 #define MODULE_PARAM_PREFIX "lowmemorykiller."

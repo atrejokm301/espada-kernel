@@ -447,10 +447,21 @@ void simple_lmk_mm_freed(struct mm_struct *mm)
 	read_unlock(&mm_free_lock);
 }
 
+/*
+ * ES301: MemAvailable floor. Upstream Simple LMK only reacts once reclaim
+ * fails outright (pressure == 100), which on a 16 GB phone means
+ * MemAvailable has already hit zero and tasks are stalling in direct
+ * reclaim. Also trigger while the root window keeps closing with less than
+ * this much available, so the kill lands a few hundred MB before exhaustion.
+ * Runtime tunable: /sys/module/lowmemorykiller/parameters/minavail_mib (0 = off).
+ */
+static unsigned int minavail_mib = 512;
+
 static int simple_lmk_vmpressure_cb(struct notifier_block *nb,
 				    unsigned long pressure, void *data)
 {
-	if (pressure == 100) {
+	if (pressure == 100 ||
+	    (minavail_mib && si_mem_available() < ((unsigned long)minavail_mib << (20 - PAGE_SHIFT)))) {
 		atomic_set(&needs_reclaim, 1);
 		smp_mb__after_atomic();
 		if (waitqueue_active(&oom_waitq))
@@ -504,3 +515,4 @@ late_initcall(simple_lmk_late_init);
 #undef MODULE_PARAM_PREFIX
 #define MODULE_PARAM_PREFIX "lowmemorykiller."
 module_param_cb(minfree, &simple_lmk_init_ops, NULL, 0200);
+module_param(minavail_mib, uint, 0644);

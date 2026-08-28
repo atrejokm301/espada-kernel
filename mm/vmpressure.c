@@ -138,6 +138,22 @@ static void vmpressure_global_work_fn(struct work_struct *work)
 }
 static DECLARE_WORK(vmpressure_global_work, vmpressure_global_work_fn);
 
+/*
+ * Sultan's calculate_vmpressure_win(): sqrt(free + file cache - shmem -
+ * swapcache) pages - a small window when memory is tight (timely
+ * notifications), a large one when cache is plentiful (no noise from MGLRU
+ * scanning a hot batch and reclaiming nothing while gigabytes are free).
+ */
+static unsigned long vmpressure_global_win(void)
+{
+	long x = global_node_page_state(NR_FILE_PAGES) -
+		 global_node_page_state(NR_SHMEM) -
+		 total_swapcache_pages() +
+		 global_zone_page_state(NR_FREE_PAGES);
+
+	return x < 1 ? 1 : int_sqrt(x);
+}
+
 static void vmpressure_global_account(unsigned long scanned, unsigned long reclaimed)
 {
 	bool fire = false;
@@ -147,17 +163,26 @@ static void vmpressure_global_account(unsigned long scanned, unsigned long recla
 	vmpressure_global_reclaimed += reclaimed;
 	if (!current_is_kswapd())
 		vmpressure_global_stall += scanned;
-	if (vmpressure_global_scanned >= vmpressure_win) {
-		vmpressure_notify_scanned = vmpressure_global_scanned;
-		vmpressure_notify_reclaimed = vmpressure_global_reclaimed;
-		vmpressure_notify_stall = vmpressure_global_stall;
+	if (vmpressure_global_scanned >= vmpressure_global_win()) {
+		/*
+		 * Sultan gates vmpressure on a task being stuck in the page
+		 * allocator's slow path ("no failed allocations means pressure
+		 * is fine"). kswapd-only windows are therefore dropped: only a
+		 * window that contained direct reclaim is reported.
+		 */
+		if (vmpressure_global_stall) {
+			vmpressure_notify_scanned = vmpressure_global_scanned;
+			vmpressure_notify_reclaimed = vmpressure_global_reclaimed;
+			vmpressure_notify_stall = vmpressure_global_stall;
+			fire = true;
+		}
 		vmpressure_global_scanned = vmpressure_global_reclaimed = vmpressure_global_stall = 0;
-		fire = true;
 	}
 	spin_unlock(&vmpressure_global_lock);
 	if (fire)
 		schedule_work(&vmpressure_global_work);
 }
+
 #else
 static inline void vmpressure_global_account(unsigned long scanned, unsigned long reclaimed) { }
 #endif

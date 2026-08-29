@@ -1646,7 +1646,11 @@ struct task_struct {
 		unsigned	user_dumpable:1;
 		});
 
+#ifdef CONFIG_ANDROID_SIMPLE_LMK
+	ANDROID_KABI_USE(4, struct task_struct *simple_lmk_next);
+#else
 	ANDROID_KABI_RESERVE(4);
+#endif
 	ANDROID_KABI_RESERVE(5);
 	ANDROID_KABI_RESERVE(6);
 	ANDROID_KABI_RESERVE(7);

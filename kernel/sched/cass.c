@@ -121,7 +121,7 @@ bool cass_prime_cpu(const struct cass_cpu_cand *c)
 static __always_inline
 bool cass_cpu_better(const struct cass_cpu_cand *a,
 		     const struct cass_cpu_cand *b, unsigned long p_util,
-		     int this_cpu, int prev_cpu, bool sync)
+		     unsigned long uc_min, int this_cpu, int prev_cpu, bool sync)
 {
 #define cass_cmp(a, b) ({ res = (a) - (b); })
 #define cass_eq(a, b) ({ res = (a) == (b); })
@@ -142,16 +142,86 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 		     fits_capacity(p_util, b->cap_max)))
 		goto done;
 
-	/* Prefer the CPU that isn't the single fastest one in the system */
-	if (cass_cmp(cass_prime_cpu(b), cass_prime_cpu(a)))
+	/*
+	 * Prefer the CPU that isn't the single fastest one in the system --
+	 * unless the non-prime candidate cannot meet the task's uclamp
+	 * minimum.
+	 *
+	 * GRIZZLY FIX 1: without the uc_min guard, a task asking for maximum
+	 * capacity lands on a cluster that physically cannot deliver it. The
+	 * early `cap_max < uc_min` filter in cass_best_cpu() drops mid at
+	 * uc_min=850 (mid cap 803), so big wins by elimination. But at
+	 * uc_min=1024 big's own cap_max (cap_orig - hw_load_avg) also dips
+	 * under uc_min, so the filter no longer protects it and this
+	 * tiebreak -- which runs BEFORE the relative-utilization compare --
+	 * hands the task to mid. Measured: uc_min=1024 -> 96 % mid / 4 % big,
+	 * 0.72x SLOWER than stock, reproducible across 3 runs.
+	 */
+	{
+		const struct cass_cpu_cand *np = cass_prime_cpu(a) ? b : a;
+
+		if (np->cap_max >= uc_min &&
+		    cass_cmp(cass_prime_cpu(b), cass_prime_cpu(a)))
+			goto done;
+	}
+
+	/*
+	 * GRIZZLY FIX 2: when both CPUs comfortably fit the task and neither
+	 * is overloaded, prefer the SMALLER original capacity.
+	 *
+	 * CASS ranks by util * SCHED_CAPACITY_SCALE / capacity, so a larger
+	 * CPU always shows lower relative utilization and wins. That assumes
+	 * capacity tracks efficiency. On this SoC it does not: freqbench
+	 * measured gelas_ll (little, cap 629) and gelas (mid, cap 803) as the
+	 * SAME CORE at ~9.3 CoreMark/MHz -- little is simply the low-leakage
+	 * bin (25 % less power at 394 MHz, 17 % at 1440 MHz). So a higher
+	 * capacity buys only a higher maximum frequency, not better
+	 * efficiency, and little wins at every performance level it can reach
+	 * (up to 24 698 iter/s). Guarded on "both fit and neither overloaded"
+	 * so CASS's overload balancing still takes precedence.
+	 */
+	if (a->eff_util < a->cap_max && b->eff_util < b->cap_max &&
+	    fits_capacity(p_util, a->cap_max) &&
+	    fits_capacity(p_util, b->cap_max) &&
+	    cass_cmp(b->cap_orig, a->cap_orig))
+		goto done;
+
+	/*
+	 * Prefer the CPU that is idle. Only relevant for uclamped tasks: for
+	 * everything else cass_best_cpu() already drops non-idle candidates
+	 * whenever an idle one exists, so both @a and @b are idle or both busy
+	 * and this is a no-op.
+	 *
+	 * GRIZZLY FIX 3: this must come BEFORE the relative-utilization
+	 * compare. For a boosted task every candidate's util was clamped up to
+	 * uc_min above, which erases the difference between a busy and an idle
+	 * CPU; the compare then "breaks the tie" on cap_no_therm (irq/RT noise)
+	 * and the idle check below it is rarely reached. Measured on grizzly
+	 * (conc4-b700, four uclamp_min=700 threads): 26 % of wakeups landed on
+	 * a mid CPU already running another boosted thread while an idle mid
+	 * CPU existed 99 % of those times -> wake-to-run p90 946 us, p99 2.2 ms,
+	 * +39 % latency vs stock in every CASS build.
+	 */
+	if (cass_cmp(!!a->exit_lat, !!b->exit_lat))
+		goto done;
+
+	/*
+	 * GRIZZLY FIX 4 (uclamp-boosted tasks only): when both candidates are
+	 * idle, prefer the CPU the task last ran on, BEFORE the relative-util
+	 * compare. For a boosted task every candidate's util was clamped up to
+	 * uc_min, so that compare can only "break the tie" on cap_no_therm
+	 * (irq/RT noise) and would otherwise decide first; the result was a
+	 * periodic task hopping between idle mid CPUs every period (same CPU as
+	 * previous 29-38 %, wake-to-run p50 191-261 us vs 99 us when it stayed
+	 * put), paying cold caches for nothing. Non-boosted tasks are left to
+	 * the relative-util compare exactly as before.
+	 */
+	if (uc_min && a->exit_lat && b->exit_lat &&
+	    (cass_eq(a->cpu, prev_cpu) || !cass_cmp(b->cpu, prev_cpu)))
 		goto done;
 
 	/* Prefer the CPU with lower relative utilization */
 	if (cass_cmp(b->util, a->util))
-		goto done;
-
-	/* Prefer the CPU that is idle (only relevant for uclamped tasks) */
-	if (cass_cmp(!!a->exit_lat, !!b->exit_lat))
 		goto done;
 
 	/* Prefer the current CPU for sync wakes */
@@ -309,8 +379,8 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		 * cidx still needs to be changed to the other candidate slot.
 		 */
 		if (best == curr ||
-		    cass_cpu_better(curr, best, p_util, this_cpu, prev_cpu,
-				    sync)) {
+		    cass_cpu_better(curr, best, p_util, uc_min, this_cpu,
+				    prev_cpu, sync)) {
 			best = curr;
 			cidx ^= 1;
 		}

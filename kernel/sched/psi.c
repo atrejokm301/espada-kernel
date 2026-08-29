@@ -1302,6 +1302,17 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 		return ERR_PTR(-EOPNOTSUPP);
 
 	/*
+	 * Simple LMK owns low-memory kills. Android's lmkd only defers to the
+	 * in-kernel killer (lowmemorykiller.minfree) when its PSI setup fails,
+	 * so refuse system-level memory triggers - the equivalent of the !PSI
+	 * requirement in Sultan Alsawaf's original Kconfig, without giving up
+	 * PSI accounting or cgroup triggers.
+	 */
+	if (IS_ENABLED(CONFIG_ANDROID_SIMPLE_LMK) && res == PSI_MEM &&
+	    group == &psi_system)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	/*
 	 * Checking the privilege on file->f_cred or selinux enabled here imply
 	 * that a privileged user could open the file and delegate the write
 	 * to an unprivileged one.

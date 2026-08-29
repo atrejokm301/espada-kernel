@@ -56,7 +56,25 @@ SCHED_FEAT(CACHE_HOT_BUDDY, false)
  *
  * DELAY_ZERO clips the lag on dequeue (or wakeup) to 0.
  */
+/*
+ * CASS implies !DELAY_DEQUEUE.
+ *
+ * util_est enqueue/dequeue in fair.c is gated on p->se.sched_delayed, so the
+ * add/subtract only balance when wakeups follow the paths mainline expects.
+ * CASS comes from a 6.1 tree that has neither sched_delayed nor DELAY_DEQUEUE
+ * (EEVDF delayed dequeue landed in 6.12), so it leaks cfs_rq->avg.util_est:
+ * measured on grizzly, an idle rq (nr_running=0) held util_est=1024 while
+ * util_avg was ~25, which pinned the mid cluster at its top OPP 98.7 % of the
+ * time and made the phone run hot. Proven at runtime: NO_DELAY_DEQUEUE cleared
+ * the stuck values within 20 s and restored stepping across all 23 OPPs.
+ *
+ * Same pattern as Sultan's b52f86961942 "Make CASS imply !SIS_UTIL".
+ */
+#ifdef CONFIG_SCHED_CASS
+SCHED_FEAT(DELAY_DEQUEUE, false)
+#else
 SCHED_FEAT(DELAY_DEQUEUE, true)
+#endif
 SCHED_FEAT(DELAY_ZERO, true)
 
 /*

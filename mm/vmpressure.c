@@ -72,6 +72,39 @@ static struct vmpressure *work_to_vmpressure(struct work_struct *work)
 	return container_of(work, struct vmpressure, work);
 }
 
+#ifdef CONFIG_ANDROID_SIMPLE_LMK
+/*
+ * ES301: Simple LMK (Sultan) wants a system-wide "pressure" percentage
+ * (100 == a full window scanned with nothing reclaimed). Upstream vmpressure
+ * is per-memcg; the root memcg's window is the whole system, so the notifier
+ * is fired from the root's work item only. No struct layout is touched (KMI).
+ */
+static BLOCKING_NOTIFIER_HEAD(vmpressure_notifier);
+
+int vmpressure_notifier_register(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&vmpressure_notifier, nb);
+}
+
+int vmpressure_notifier_unregister(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&vmpressure_notifier, nb);
+}
+
+static void vmpressure_notify(unsigned long scanned, unsigned long reclaimed)
+{
+	unsigned long scale = scanned + reclaimed;
+	unsigned long pressure;
+
+	/* same arithmetic as vmpressure_calc_level(), scanned > 0 here */
+	pressure = scale - (reclaimed * scale / scanned);
+	pressure = pressure * 100 / scale;
+	blocking_notifier_call_chain(&vmpressure_notifier, pressure, NULL);
+}
+#else
+static inline void vmpressure_notify(unsigned long scanned, unsigned long reclaimed) { }
+#endif
+
 static struct vmpressure *vmpressure_parent(struct vmpressure *vmpr)
 {
 	struct mem_cgroup *memcg = vmpressure_to_memcg(vmpr);
@@ -207,6 +240,10 @@ static void vmpressure_work_fn(struct work_struct *work)
 	spin_unlock(&vmpr->sr_lock);
 
 	level = vmpressure_calc_level(scanned, reclaimed);
+
+	/* ES301: system-wide pressure = the root memcg's window */
+	if (!vmpressure_parent(vmpr))
+		vmpressure_notify(scanned, reclaimed);
 
 	do {
 		if (vmpressure_event(vmpr, level, ancestor, signalled))

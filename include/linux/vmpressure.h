@@ -30,6 +30,11 @@ struct vmpressure {
 struct mem_cgroup;
 
 #ifdef CONFIG_MEMCG
+#ifdef CONFIG_ANDROID_SIMPLE_LMK
+/* ES301: global (root memcg) pressure notifier consumed by Simple LMK */
+extern int vmpressure_notifier_register(struct notifier_block *nb);
+extern int vmpressure_notifier_unregister(struct notifier_block *nb);
+#endif
 extern void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 		       unsigned long scanned, unsigned long reclaimed);
 extern void vmpressure_prio(gfp_t gfp, struct mem_cgroup *memcg, int prio);

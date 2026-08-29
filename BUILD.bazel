@@ -259,6 +259,7 @@ common_kernel(
     arch = "arm64",
     build_gki_artifacts = True,
     clang_autofdo_profile = ":gki/aarch64/afdo/kernel.afdo",
+    # ES301 release: MLGO inliner + regalloc advisors (models embedded in clang-r536225)
     ddk_headers_archive = ":kernel_aarch64_ddk_headers_archive",
     ddk_module_headers = [":all_headers_aarch64"],
     defconfig = "arch/arm64/configs/gki_defconfig",
@@ -268,7 +269,13 @@ common_kernel(
     ],
     gki_boot_img_sizes = _GKI_AARCH64_BOOT_IMAGE_SIZES,
     gki_system_dlkm_modules = ":gki_system_dlkm_modules_arm64",
-    kcflags = COMMON_KCFLAGS,
+    kcflags = list(COMMON_KCFLAGS) + [
+        # ES301 release: MLGO inliner + regalloc advisors (models embedded in clang-r536225)
+        "-mllvm",
+        "-enable-ml-inliner=release",
+        "-mllvm",
+        "-regalloc-enable-advisor=release",
+    ],
     kmi_enforced = True,
     kmi_symbol_list = "gki/aarch64/symbols/base",
     kmi_symbol_list_strict_mode = True,

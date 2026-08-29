@@ -1840,6 +1840,18 @@ static ssize_t polling_interval_store(struct device *dev,
 	if (ret != 1)
 		return -EINVAL;
 
+	/*
+	 * ES301 (grizzly): floor the GPU devfreq polling interval at 40 ms.
+	 * The Pixel Power HAL (powerhint.json GPULoadPollInterval, ResetOnInit)
+	 * writes 20 at init and 10 on hints; measured on the PowerVR GPU
+	 * (webgl aquarium, 120 Hz, 60 s): 10 ms 431 mW / 77 % janky frames,
+	 * 20 ms 366 mW / 22 %, 40 ms 335 mW / 21 %. The driver default cannot
+	 * be changed from here because pvrsrvkm loads from vendor_dlkm.
+	 */
+	if (value && value < 40 && df->dev.parent &&
+	    strstr(dev_name(df->dev.parent), "gpu"))
+		value = 40;
+
 	df->governor->event_handler(df, DEVFREQ_GOV_UPDATE_INTERVAL, &value);
 	ret = count;
 

@@ -516,3 +516,15 @@ late_initcall(simple_lmk_late_init);
 #define MODULE_PARAM_PREFIX "lowmemorykiller."
 module_param_cb(minfree, &simple_lmk_init_ops, NULL, 0200);
 module_param(minavail_mib, uint, 0644);
+
+/*
+ * Android's lmkd, on seeing lowmemorykiller.minfree, switches to its
+ * "in-kernel low memory killer" mode and also writes the classic adj table.
+ * Accept and ignore it so lmkd stays quiet; Simple LMK uses oom_score_adj.
+ */
+static int simple_lmk_adj_set(const char *val, const struct kernel_param *kp)
+{
+	return 0;
+}
+static const struct kernel_param_ops simple_lmk_adj_ops = { .set = simple_lmk_adj_set };
+module_param_cb(adj, &simple_lmk_adj_ops, NULL, 0200);

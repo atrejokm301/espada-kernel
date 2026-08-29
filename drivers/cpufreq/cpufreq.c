@@ -823,6 +823,19 @@ static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 	if (ret != 1)
 		return -EINVAL;
 
+#if defined(CONFIG_SOC_GOOGLE) && \
+	(IS_ENABLED(CONFIG_SCHED_CASS) || !IS_ENABLED(CONFIG_VH_SCHED))
+	/*
+	 * sched_pixel is not registered when CASS is in charge (see vh_sched
+	 * init.c), but Android userspace still asks for it by name. Reroute the
+	 * request to schedutil instead of failing with -EINVAL and leaving the
+	 * policy on whatever it happened to be. (Sultan 16561aaebbad, widened
+	 * to cover CASS since we keep vh_sched loaded for thermal.)
+	 */
+	if (!strcmp(str_governor, "sched_pixel"))
+		strcpy(str_governor, "schedutil");
+#endif
+
 	if (cpufreq_driver->setpolicy) {
 		unsigned int new_pol;
 

@@ -191,7 +191,7 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 				  unsigned long util, unsigned long max)
 {
 	struct cpufreq_policy *policy = sg_policy->policy;
-	unsigned int freq;
+	unsigned int freq, idx, l_freq, h_freq;
 	unsigned long next_freq = 0;
 
 	freq = get_capacity_ref_freq(policy);
@@ -206,7 +206,26 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 		return sg_policy->next_freq;
 
 	sg_policy->cached_raw_freq = freq;
-	return cpufreq_driver_resolve_freq(policy, freq);
+
+	/*
+	 * Schedutil targets an 80 % tipping point without regard to how big the
+	 * gap between adjacent OPPs is, so a target only slightly above a step
+	 * still jumps to the next one up. On this SoC the gaps are large
+	 * (freqbench: little 2496->2649, big 3340->3571), so that wastes energy.
+	 * Prefer the step BELOW the target when the target is <20 % above it.
+	 * (Sultan df2778912806)
+	 */
+	l_freq = cpufreq_driver_resolve_freq(policy, freq);
+	idx = cpufreq_frequency_table_target(policy, freq, CPUFREQ_RELATION_H);
+	h_freq = policy->freq_table[idx].frequency;
+	h_freq = clamp(h_freq, policy->min, policy->max);
+	if (l_freq <= h_freq || l_freq == policy->min)
+		return l_freq;
+
+	if (mult_frac(100, freq - h_freq, h_freq) < 20)
+		return h_freq;
+
+	return l_freq;
 }
 
 unsigned long sugov_effective_cpu_perf(int cpu, unsigned long actual,
@@ -357,37 +376,29 @@ static unsigned long sugov_iowait_apply(struct sugov_cpu *sg_cpu, u64 time,
 	return (sg_cpu->iowait_boost * max_cap) >> SCHED_CAPACITY_SHIFT;
 }
 
-#ifdef CONFIG_NO_HZ_COMMON
-static bool sugov_hold_freq(struct sugov_cpu *sg_cpu)
-{
-	unsigned long idle_calls;
-	bool ret;
-
-	/*
-	 * The heuristics in this function is for the fair class. For SCX, the
-	 * performance target comes directly from the BPF scheduler. Let's just
-	 * follow it.
-	 */
-	if (scx_switched_all())
-		return false;
-
-	/* if capped by uclamp_max, always update to be in compliance */
-	if (uclamp_rq_is_capped(cpu_rq(sg_cpu->cpu)))
-		return false;
-
-	/*
-	 * Maintain the frequency if the CPU has not been idle recently, as
-	 * reduction is likely to be premature.
-	 */
-	idle_calls = tick_nohz_get_idle_calls_cpu(sg_cpu->cpu);
-	ret = idle_calls == sg_cpu->saved_idle_calls;
-
-	sg_cpu->saved_idle_calls = idle_calls;
-	return ret;
-}
-#else
+/*
+ * Upstream holds a CPU's frequency up until it has been idle at least once
+ * since the last update, on the theory that a reduction would be premature.
+ * That puts the cart before the horse: a CPU's clock is gated in even the
+ * shallowest idle state, so a long-running low-compute workload is pinned at a
+ * high OPP until it happens to idle. The rate limit already prevents thrashing.
+ * Sultan measured 270 mW -> 250 mW (-7.5 %) on a Pixel 8 with no visible perf
+ * loss. Especially relevant here because policy6 (the big core) is a
+ * single-CPU policy, and its callers below are the single-CPU update paths.
+ * (Sultan e57e985e1c8c, adapted: 6.12 renamed this sugov_hold_freq() and added
+ * the scx/uclamp guards, so we keep the function and just return false.)
+ */
 static inline bool sugov_hold_freq(struct sugov_cpu *sg_cpu) { return false; }
-#endif /* CONFIG_NO_HZ_COMMON */
+
+/*
+ * A CPU's clock is gated in even the shallowest idle state, so requiring an
+ * idle call before the frequency may drop puts the cart before the horse: a
+ * long-running low-compute workload is held at a high OPP until it happens to
+ * idle. The rate limit already prevents thrashing. Sultan measured
+ * 270 mW -> 250 mW (-7.5 %) on a Pixel 8 with no visible perf loss. Relevant
+ * here because policy6 (the big core) is a single-CPU policy.
+ * (Sultan e57e985e1c8c)
+ */
 
 /*
  * Make sugov_should_update_freq() ignore the rate limit when DL

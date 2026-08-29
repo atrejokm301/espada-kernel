@@ -44,7 +44,8 @@ SCHED_FEAT(PICK_BUDDY, true)
  * Consider buddies to be cache hot, decreases the likeliness of a
  * cache buddy being migrated away, increases cache locality.
  */
-SCHED_FEAT(CACHE_HOT_BUDDY, true)
+/* Off to leverage the DynamIQ Shared Unit (Sultan 4c9612701dac) */
+SCHED_FEAT(CACHE_HOT_BUDDY, false)
 
 /*
  * Delay dequeueing tasks until they get selected or woken.

@@ -104,7 +104,10 @@ static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
  */
 unsigned int sysctl_sched_child_runs_first __read_mostly;
 
-const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
+/* 0 to leverage the DynamIQ Shared Unit: migrating between CPUs that share
+ * the DSU L3 is cheap, so the 500us penalty just pins tasks unnecessarily.
+ * (Sultan 9fdc36b53228) */
+const_debug unsigned int sysctl_sched_migration_cost	= 0UL;
 
 static int __init setup_sched_thermal_decay_shift(char *str)
 {
@@ -10887,15 +10890,12 @@ has_spare:
 	}
 
 	/*
-	 * Candidate sg has no more than one task per CPU and has higher
-	 * per-CPU capacity. Migrating tasks to less capable CPUs may harm
-	 * throughput. Maximize throughput, power/energy consequences are not
-	 * considered.
+	 * Upstream keeps tasks on higher-capacity CPUs here to maximise
+	 * throughput, explicitly disregarding power. On this SoC that is the
+	 * wrong trade: freqbench measured little winning at every performance
+	 * level it can reach, and little/mid are the same core with little
+	 * simply the low-leakage bin. Removed. (Sultan 60d154ffc7e5)
 	 */
-	if ((env->sd->flags & SD_ASYM_CPUCAPACITY) &&
-	    (sgs->group_type <= group_fully_busy) &&
-	    (capacity_greater(sg->sgc->min_capacity, capacity_of(env->dst_cpu))))
-		return false;
 
 	return true;
 }

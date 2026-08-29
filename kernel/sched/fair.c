@@ -7381,6 +7381,22 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 
 	sub_nr_running(rq, h_nr_queued);
 
+	/*
+	 * An empty root cfs_rq has, by definition, no estimated utilization.
+	 * Anything left in util_est here is an accounting residue (an enqueue
+	 * that never saw its matching dequeue - e.g. a vendor hook updating a
+	 * PI-boosted task) and, because util_est_dequeue() clamps at zero and
+	 * nothing decays it, it would otherwise pin this CPU's OPP forever.
+	 * Reset it, the same way the Pixel vendor module resets its own
+	 * per-group util_est when the rq drains. No-op when accounting is
+	 * balanced.
+	 */
+	if (sched_feat(UTIL_EST) && !rq->cfs.h_nr_queued &&
+	    READ_ONCE(rq->cfs.avg.util_est)) {
+		WRITE_ONCE(rq->cfs.avg.util_est, 0);
+		trace_sched_util_est_cfs_tp(&rq->cfs);
+	}
+
 	/* balance early to pull high priority tasks */
 	if (unlikely(!was_sched_idle && sched_idle_rq(rq)))
 		rq->next_balance = jiffies;

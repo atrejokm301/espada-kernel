@@ -2866,9 +2866,9 @@ static struct task_struct *pick_next_pushable_dl_task(struct rq *rq)
 		 * cpu argument doesn't matter because we treat a -1 result
 		 * (pushable but can't go to cpu0) the same as a 1 result
 		 * (pushable to cpu0). All we care about here is general
-		 * pushability.
+		 * pushability. Skip tasks that cannot be migrated.
 		 */
-		if (task_is_pushable(rq, i, 0)) {
+		if (task_is_pushable(rq, i, 0) && !is_migration_disabled(i)) {
 			p = i;
 			break;
 		}

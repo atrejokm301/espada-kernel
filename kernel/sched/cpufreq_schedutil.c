@@ -836,7 +836,17 @@ static int sugov_init(struct cpufreq_policy *policy)
 		goto stop_kthread;
 	}
 
-	tunables->rate_limit_us = cpufreq_policy_transition_delay_us(policy);
+	/*
+	 * Espada: built-in rate limits chosen on grizzly instead of the driver's
+	 * transition delay (1000 us). With FIE present the limit no longer gates
+	 * upward transitions, so this only holds frequency reductions: 2000 us on
+	 * the little and mid clusters, 2500 us on the prime (capacity 1024)
+	 * cluster. Still writable through sysfs rate_limit_us.
+	 */
+	if (arch_scale_cpu_capacity(policy->cpu) >= SCHED_CAPACITY_SCALE)
+		tunables->rate_limit_us = 2500;
+	else
+		tunables->rate_limit_us = 2000;
 
 	policy->governor_data = sg_policy;
 	sg_policy->tunables = tunables;

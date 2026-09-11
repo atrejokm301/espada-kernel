@@ -54,7 +54,7 @@ void *erofs_bread(struct erofs_buf *buf, erofs_off_t offset,
 	}
 	if (type == EROFS_NO_KMAP)
 		return NULL;
-	return buf->base + (offset & ~PAGE_MASK);
+	return buf->base + ((buf->off + offset) & ~PAGE_MASK);
 }
 
 void erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb)

@@ -484,16 +484,6 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 	WRITE_ONCE(rq->deadline, 0);
 	req_ref_set(rq, 1);
 
-	if (rq->rq_flags & RQF_USE_SCHED) {
-		struct elevator_queue *e = data->q->elevator;
-
-		INIT_HLIST_NODE(&rq->hash);
-		RB_CLEAR_NODE(&rq->rb_node);
-
-		if (e->type->ops.prepare_request)
-			e->type->ops.prepare_request(rq);
-	}
-
 	return rq;
 }
 
@@ -530,6 +520,35 @@ __blk_mq_alloc_requests_batch(struct blk_mq_alloc_data *data)
 	return rq_list_pop(data->cached_rqs);
 }
 
+static bool blk_op_bypass_sched(blk_opf_t opf)
+{
+	return (opf & REQ_OP_MASK) == REQ_OP_FLUSH ||
+	       blk_op_is_passthrough(opf);
+}
+
+/*
+ * Finish initializing a request once it has been claimed for an operation.
+ * Cached requests are allocated before that operation is known.
+ */
+static void blk_mq_rq_late_init(struct request *rq, u64 alloc_time_ns)
+{
+	struct elevator_queue *e;
+
+	if ((rq->rq_flags & RQF_SCHED_TAGS) && !(rq->rq_flags & RQF_RESV) &&
+	    !blk_op_bypass_sched(rq->cmd_flags)) {
+		rq->rq_flags |= RQF_USE_SCHED;
+		INIT_HLIST_NODE(&rq->hash);
+		RB_CLEAR_NODE(&rq->rb_node);
+
+		e = rq->q->elevator;
+		if (e->type->ops.prepare_request)
+			e->type->ops.prepare_request(rq);
+	}
+
+	/* after RQF_USE_SCHED is known, see blk_mq_need_time_stamp() */
+	blk_mq_rq_time_init(rq, alloc_time_ns);
+}
+
 static struct request *__blk_mq_alloc_requests(struct blk_mq_alloc_data *data)
 {
 	struct request_queue *q = data->q;
@@ -559,13 +578,11 @@ retry:
 		 * Flush/passthrough requests are special and go directly to the
 		 * dispatch list.
 		 */
-		if ((data->cmd_flags & REQ_OP_MASK) != REQ_OP_FLUSH &&
-		    !blk_op_is_passthrough(data->cmd_flags)) {
+		if (!blk_op_bypass_sched(data->cmd_flags)) {
 			struct elevator_mq_ops *ops = &q->elevator->type->ops;
 
 			WARN_ON_ONCE(data->flags & BLK_MQ_REQ_RESERVED);
 
-			data->rq_flags |= RQF_USE_SCHED;
 			if (ops->limit_depth)
 				ops->limit_depth(data->cmd_flags, data);
 		}
@@ -582,7 +599,7 @@ retry:
 	if (data->nr_tags > 1) {
 		rq = __blk_mq_alloc_requests_batch(data);
 		if (rq) {
-			blk_mq_rq_time_init(rq, alloc_time_ns);
+			blk_mq_rq_late_init(rq, alloc_time_ns);
 			return rq;
 		}
 		data->nr_tags = 1;
@@ -610,7 +627,7 @@ retry:
 	if (!(data->rq_flags & RQF_SCHED_TAGS))
 		blk_mq_inc_active_requests(data->hctx);
 	rq = blk_mq_rq_ctx_init(data, blk_mq_tags_from_data(data), tag);
-	blk_mq_rq_time_init(rq, alloc_time_ns);
+	blk_mq_rq_late_init(rq, alloc_time_ns);
 	return rq;
 }
 
@@ -653,8 +670,6 @@ static struct request *blk_mq_alloc_cached_request(struct request_queue *q,
 		if (plug->nr_ios == 1)
 			return NULL;
 		rq = blk_mq_rq_cache_fill(q, plug, opf, flags);
-		if (!rq)
-			return NULL;
 	} else {
 		rq = rq_list_peek(&plug->cached_rqs);
 		if (!rq || rq->q != q)
@@ -666,11 +681,11 @@ static struct request *blk_mq_alloc_cached_request(struct request_queue *q,
 			return NULL;
 
 		rq_list_pop(&plug->cached_rqs);
-		blk_mq_rq_time_init(rq, 0);
+		rq->cmd_flags = opf;
+		INIT_LIST_HEAD(&rq->queuelist);
+		blk_mq_rq_late_init(rq, 0);
 	}
 
-	rq->cmd_flags = opf;
-	INIT_LIST_HEAD(&rq->queuelist);
 	return rq;
 }
 
@@ -771,7 +786,7 @@ struct request *blk_mq_alloc_request_hctx(struct request_queue *q,
 	if (!(data.rq_flags & RQF_SCHED_TAGS))
 		blk_mq_inc_active_requests(data.hctx);
 	rq = blk_mq_rq_ctx_init(&data, blk_mq_tags_from_data(&data), tag);
-	blk_mq_rq_time_init(rq, alloc_time_ns);
+	blk_mq_rq_late_init(rq, alloc_time_ns);
 	rq->__data_len = 0;
 	rq->__sector = (sector_t) -1;
 	rq->bio = rq->biotail = NULL;
@@ -3130,9 +3145,9 @@ static void blk_mq_use_cached_rq(struct request *rq, struct blk_plug *plug,
 	 */
 	rq_qos_throttle(rq->q, bio);
 
-	blk_mq_rq_time_init(rq, 0);
 	rq->cmd_flags = bio->bi_opf;
 	INIT_LIST_HEAD(&rq->queuelist);
+	blk_mq_rq_late_init(rq, 0);
 }
 
 static bool bio_unaligned(const struct bio *bio, struct request_queue *q)

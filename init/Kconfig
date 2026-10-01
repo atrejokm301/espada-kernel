@@ -268,6 +268,33 @@ config LOCALVERSION_AUTO
 
 	  which is done within the script "scripts/setlocalversion".)
 
+config UNAME_SPOOF
+	bool "Spoof uname release for targeted processes"
+	default n
+	help
+	  Enables per-process uname() spoofing with a configurable target list.
+	  Targeted processes receive a configurable release string instead of
+	  the real kernel release. Runtime configurable via sysfs at
+	  /sys/kernel/uname_spoof/.
+
+config UNAME_SPOOF_RELEASE
+	string "Spoofed kernel release string"
+	depends on UNAME_SPOOF
+	default ""
+	help
+	  The kernel release string returned by uname() for targeted processes.
+	  Example: 6.12.81-android16-6-g1e323bfad9c2-ab15954189-4k
+	  Can be changed at runtime via /sys/kernel/uname_spoof/release.
+
+config UNAME_SPOOF_TIMESTAMP
+	string "Spoofed build timestamp for UTS_VERSION"
+	depends on UNAME_SPOOF
+	default ""
+	help
+	  Overrides KBUILD_BUILD_TIMESTAMP at compile time. This sets the
+	  timestamp shown in uname -v for ALL processes (baked into UTS_VERSION).
+	  Example: Mon Jul 27 19:07:03 UTC 2026
+
 config BUILD_SALT
 	string "Build ID Salt"
 	default ""

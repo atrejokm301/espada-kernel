@@ -755,6 +755,13 @@ ifdef need-config
 include $(objtree)/include/config/auto.conf
 endif
 
+ifdef CONFIG_UNAME_SPOOF
+ifneq ($(CONFIG_UNAME_SPOOF_TIMESTAMP),"")
+export KBUILD_BUILD_TIMESTAMP := $(patsubst "%",%,$(CONFIG_UNAME_SPOOF_TIMESTAMP))
+endif
+export KBUILD_BUILD_VERSION := 1
+endif
+
 ifeq ($(KBUILD_EXTMOD),)
 # Objects we will link into vmlinux / subdirs we need to visit
 core-y		:=

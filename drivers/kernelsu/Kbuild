@@ -8,6 +8,8 @@ ifneq ($(filter y arm64 aarch64,$(CONFIG_ARM64) $(ARCH)),)
 KSU_ARCH := arm64
 else ifneq ($(filter y x86_64 i386,$(CONFIG_X86_64) $(ARCH)),)
 KSU_ARCH := x86_64
+else ifneq ($(filter y riscv riscv64,$(CONFIG_RISCV) $(ARCH)),)
+KSU_ARCH := riscv64
 endif
 
 # Core utilities ('selinux hide'/hooks)
@@ -89,14 +91,13 @@ ifneq ($(KBUILD_EXTMOD),)
 # 6.18 exports the external module source as srcroot when M/MO are used.
 ifneq ($(srcroot),)
 KSU_KERNEL_DIR := $(srcroot)
+else
+KSU_KERNEL_DIR := $(KBUILD_EXTMOD)
 endif
-endif
-ifndef KSU_KERNEL_DIR
-ifeq ($(filter /%,$(src)),)
+else ifeq ($(filter /%,$(src)),)
 KSU_KERNEL_DIR := $(srctree)/$(src)
 else
 KSU_KERNEL_DIR := $(src)
-endif
 endif
 
 ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
@@ -134,7 +135,7 @@ ccflags-y += -DKSU_VERSION=$(KSU_VERSION)
 else
 # If there is no .git directory, use default version
 $(warning "KSU_GIT_VERSION not defined! It is better to make KernelSU-Next a git repository!")
-KSU_VERSION_FALLBACK := 33253
+KSU_VERSION_FALLBACK := 33302
 $(info -- KernelSU-Next version fallback: $(KSU_VERSION_FALLBACK))
 ccflags-y += -DKSU_VERSION=$(KSU_VERSION_FALLBACK)
 endif
@@ -145,7 +146,7 @@ $(info -- KernelSU-Next tag: $(KSU_VERSION_TAG))
 ccflags-y += -DKSU_VERSION_TAG=\"$(KSU_VERSION_TAG)\"
 else
 $(warning "KSU_VERSION_TAG not defined! It is better to make KernelSU-Next a git submodule!")
-KSU_VERSION_TAG_FALLBACK := v3.3.0
+KSU_VERSION_TAG_FALLBACK := v3.4.0
 $(info -- KernelSU-Next tag fallback: $(KSU_VERSION_TAG_FALLBACK))
 ccflags-y += -DKSU_VERSION_TAG=\"$(KSU_VERSION_TAG_FALLBACK)\"
 endif
@@ -168,7 +169,7 @@ ccflags-y += -DKSU_NEXT_MANAGER_LIST=\"$(KSU_NEXT_MANAGER_LIST)\"
 
 ccflags-y += -DKSU_NEW_DCACHE_FLUSH=$(KSU_NEW_DCACHE_FLUSH)
 
-ccflags-y += -Wno-strict-prototypes -Wno-int-conversion -Wno-gcc-compat -Wno-missing-prototypes
+ccflags-y += -Wno-strict-prototypes -Wno-int-conversion -Wno-gcc-compat -Wno-missing-prototypes -Wno-missing-declarations
 ccflags-y += -Wno-declaration-after-statement -Wno-unused-function -Wno-unused-variable
 
 ## For susfs stuff ##
@@ -184,3 +185,4 @@ endif
 endif
 
 # Keep a new line here!! Because someone may append config
+

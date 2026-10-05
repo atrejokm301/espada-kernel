@@ -20,6 +20,7 @@
 
 #include <linux/fs_struct.h>
 
+#include <linux/task_work.h>
 #ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs_def.h>
 #include <linux/minmax.h>
@@ -37,6 +38,7 @@
 #include "feature/adb_root.h"
 #include "policy/app_profile.h"
 #include "hook/syscall_hook.h"
+#include "supercall/supercall.h"
 #include "sulog/event.h"
 #include "ksu.h"
 #include "util.h"
@@ -231,26 +233,26 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
     int ret;
 
     if (unlikely(!filename_ptr))
-        return 0;
+        return -EINVAL;
 
     filename = *filename_ptr;
     if (IS_ERR(filename))
-        return 0;
+        return -EINVAL;
 
     if (!ksu_handle_execveat_init(filename, (struct user_arg_ptr*)argv_user, (struct user_arg_ptr*)envp_user))
-        return 0;
+        return -EINVAL;
 
     if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
-        return 0;
+        return -EINVAL;
 
     if (current_chrooted())
     {
         pr_err("ksu_handle_execveat_sucompat: su found but NOT allowed! Because current process is running in chrooted environment\n");
-        return 0;
+        return -EINVAL;
     }
 
     if (!ksu_is_allow_uid_for_current(current_uid().val))
-        return 0;
+        return -EINVAL;
 
     ksu_compat_sulog('x');
     pr_info("ksu_handle_execveat_sucompat: su found\n");
@@ -262,11 +264,23 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
     memcpy((void *)filename->name, ksud_path, sizeof(ksud_path));
 
     ret = escape_with_root_profile();
-    if (ret)
+    if (ret) {
         pr_err("escape_with_root_profile() failed: %d\n", ret);
+        return -EINVAL;
+    }
 
     ksu_sulog_emit_pending(pending_sucompat, ret, GFP_KERNEL);
 
+    return 0;
+}
+
+int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr,
+                 void *argv_user, void *envp_user,
+                 int *__never_use_flags, int *retval)
+{
+    if (*retval >= 0) {
+        (void)ksu_install_su_fd();
+    }
     return 0;
 }
 
@@ -278,10 +292,10 @@ int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
     struct ksu_sulog_pending_event *pending_root_execve = NULL;
 
     if (unlikely(!filename_ptr))
-        return 0;
+        return -EINVAL;
 
     if (IS_ERR(*filename_ptr))
-        return 0;
+        return -EINVAL;
 
     if (current_euid().val == 0) {
         struct user_arg_ptr *argv_ptr = (struct user_arg_ptr *)argv;
@@ -292,8 +306,7 @@ int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
     }
 
     if (static_branch_unlikely(&is_first_zygote)) {
-        if (ksu_handle_execveat_ksud(fd, filename_ptr, argv, envp, flags))
-            return 0;
+        (void)ksu_handle_execveat_ksud(fd, filename_ptr, argv, envp, flags);
     }
 
     return ksu_handle_execveat_sucompat(fd, filename_ptr, argv, envp,
@@ -486,6 +499,7 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
 	char path[sizeof(su_path) + 1];
 	long ret, orig_regs[5];
 	unsigned long addr;
+	int su_fd = -1;
 	int tmp_fd;
 	struct file *ksud_file;
 	const struct cred *old_cred;
@@ -565,6 +579,13 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
 		regs->__PT_PARM3_REG = orig_regs[2];
 		regs->__PT_SYSCALL_PARM4_REG = orig_regs[3];
 		regs->__PT_PARM5_REG = orig_regs[4];
+	} else {
+		// Only grant the scoped driver capability after the selected root
+		// profile has been applied successfully.
+		su_fd = ksu_install_su_fd();
+		if (su_fd < 0) {
+			pr_warn("install su session fd failed: %d\n", su_fd);
+		}
 	}
 	return ret;
 

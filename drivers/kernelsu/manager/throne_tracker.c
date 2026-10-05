@@ -1,4 +1,6 @@
-
+#include "ksu.h"
+#include "linux/cred.h"
+#include "util.h"
 #include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/list.h>
@@ -205,7 +207,7 @@ void search_manager(const char *path, int depth, struct list_head *uid_data)
 			struct file *file;
 
 			if (!stop) {
-				file = filp_open(pos->dirpath, O_RDONLY | O_NOFOLLOW | O_DIRECTORY, 0);
+				file = ksu_filp_open_nonotify(pos->dirpath, O_RDONLY | O_NOFOLLOW | O_NOATIME | O_DIRECTORY);
 				if (IS_ERR(file)) {
 					pr_err("Failed to open directory: %s, err: %ld\n",
 						pos->dirpath, PTR_ERR(file));
@@ -269,6 +271,7 @@ static bool is_uid_exist(uid_t uid, char *package, void *data)
 
 static void track_throne_function(bool prune_only)
 {
+	const struct cred *old_cred = override_creds(ksu_cred);
 	struct file *fp = NULL;
 	int t;
 	long err = -ENOENT;
@@ -286,7 +289,7 @@ static void track_throne_function(bool prune_only)
 	if (IS_ERR(fp)) {
 		pr_err("%s: open " SYSTEM_PACKAGES_LIST_PATH " failed: %ld\n",
 			__func__, err);
-		return;
+		goto out_revert_cred;
 	}
 
 	struct list_head uid_list;
@@ -375,6 +378,8 @@ out:
 		list_del(&np->list);
 		kfree(np);
 	}
+out_revert_cred:
+	revert_creds(old_cred);
 }
 
 #ifdef CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED

@@ -6,6 +6,10 @@
 #include <linux/sched.h>
 #include <linux/workqueue.h>
 
+#if !defined(CONFIG_KPROBES) && !defined(CONFIG_KSU_SUSFS)
+#error "KernelSU requires either CONFIG_KPROBES or CONFIG_KSU_SUSFS to be enabled!"
+#endif
+
 #include "policy/allowlist.h"
 #include "policy/app_profile.h"
 #include "policy/feature.h"
@@ -90,6 +94,11 @@ module_param(allow_shell, bool, 0);
 
 bool ksu_no_custom_rc = false;
 module_param_named(norc, ksu_no_custom_rc, bool, 0);
+
+#ifdef MODULE
+bool ksu_bundled = false;
+module_param_named(bundled, ksu_bundled, bool, 0);
+#endif
 
 int __init kernelsu_init(void)
 {

@@ -179,8 +179,16 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 	 * efficiency, and little wins at every performance level it can reach
 	 * (up to 24 698 iter/s). Guarded on "both fit and neither overloaded"
 	 * so CASS's overload balancing still takes precedence.
+	 *
+	 * Only between candidates of the same idleness. Non-boosted tasks
+	 * never get here with one idle and one busy candidate, but a task
+	 * boosted above every cluster's minimum-frequency capacity keeps its
+	 * busy candidates (has_idle is never set for it), and this compare
+	 * would then put it behind a running task on a little CPU while a mid
+	 * CPU sits idle, before the idle check below is ever reached.
 	 */
-	if (a->eff_util < a->cap_max && b->eff_util < b->cap_max &&
+	if (!a->exit_lat == !b->exit_lat &&
+	    a->eff_util < a->cap_max && b->eff_util < b->cap_max &&
 	    fits_capacity(p_util, a->cap_max) &&
 	    fits_capacity(p_util, b->cap_max) &&
 	    cass_cmp(b->cap_orig, a->cap_orig))

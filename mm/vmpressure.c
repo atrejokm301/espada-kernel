@@ -121,7 +121,15 @@ static void vmpressure_global_work_fn(struct work_struct *work)
 	if (!scanned)
 		return;
 
-	/* same arithmetic as vmpressure_calc_level() */
+	/*
+	 * Same arithmetic as vmpressure_calc_level(), including its guard:
+	 * reclaimed can exceed scanned (slab, large folios), which would
+	 * underflow the subtraction below. That is no pressure at all.
+	 */
+	if (reclaimed >= scanned) {
+		pressure = 0;
+		goto notify;
+	}
 	scale = scanned + reclaimed;
 	pressure = scale - (reclaimed * scale / scanned);
 	pressure = pressure * 100 / scale;
@@ -134,6 +142,7 @@ static void vmpressure_global_work_fn(struct work_struct *work)
 		stall = min(stall, scanned);
 		pressure += (100 - pressure) * stall / scanned;
 	}
+notify:
 	blocking_notifier_call_chain(&vmpressure_notifier, pressure, NULL);
 }
 static DECLARE_WORK(vmpressure_global_work, vmpressure_global_work_fn);

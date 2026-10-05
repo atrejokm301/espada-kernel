@@ -7438,6 +7438,20 @@ static bool dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	if (!p->se.sched_delayed)
 		util_est_dequeue(&rq->cfs, p);
 
+	/*
+	 * util_est_update() now runs from update_load_avg() and only for a
+	 * sleeping task, but the Android vendor hook was called on every
+	 * dequeue and the Pixel module relies on that: it snapshots the task
+	 * state there for its enqueue/dequeue bookkeeping. Keep notifying it
+	 * for the dequeues that are not a sleep (the generic body did nothing
+	 * for those).
+	 */
+	if (!(flags & DEQUEUE_SLEEP)) {
+		int ret = 0;
+
+		trace_android_rvh_util_est_update(&rq->cfs, p, false, &ret);
+	}
+
 	if (dequeue_entities(rq, &p->se, flags) < 0)
 		return false;
 

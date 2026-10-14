@@ -2,6 +2,7 @@
 #define __KSU_H_SELINUX_HIDE
 
 #include <linux/types.h>
+#include <linux/version.h>
 
 void ksu_selinux_hide_init();
 void ksu_selinux_hide_exit();
@@ -20,6 +21,10 @@ struct static_key_false;
 extern struct static_key_false fake_status_initialize_key;
 
 struct selinux_state;
+#ifdef CONFIG_KSU_SUSFS
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
 extern struct selinux_state fake_state;
+#endif
+#endif
 
 #endif

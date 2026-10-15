@@ -12,6 +12,7 @@
 #include <linux/oom.h>
 #include <linux/sched/mm.h>
 #include <linux/sort.h>
+#include <linux/swap.h>
 #include <linux/vmpressure.h>
 #include <uapi/linux/sched/types.h>
 
@@ -49,6 +50,7 @@ static __cacheline_aligned_in_smp DEFINE_RWLOCK(mm_free_lock);
 static int nr_victims;
 static bool reclaim_active;
 static unsigned long floor_backoff;
+static unsigned long reclaim_pressure;
 static atomic_t needs_reclaim = ATOMIC_INIT(RECLAIM_NONE);
 static atomic_t needs_reap = ATOMIC_INIT(0);
 static atomic_t nr_killed = ATOMIC_INIT(0);
@@ -221,8 +223,10 @@ static void set_task_rt_prio(struct task_struct *tsk, int priority)
 
 static int scan_and_kill(short lowest_adj)
 {
+	long avail = si_mem_available(), swap_free = get_nr_swap_pages();
+	unsigned long pages_found, pressure = READ_ONCE(reclaim_pressure);
 	int i, nr_to_kill, nr_found = 0;
-	unsigned long pages_found;
+	ktime_t start = ktime_get();
 
 	/*
 	 * Reset nr_victims so the reaper thread and simple_lmk_mm_freed() are
@@ -330,6 +334,14 @@ static int scan_and_kill(short lowest_adj)
 	/* Wait until all the victims die or until the timeout is reached */
 	if (!wait_for_completion_timeout(&reclaim_done, RECLAIM_EXPIRES))
 		pr_info("Timeout hit waiting for victims to die, proceeding\n");
+
+	/* One line per round: what triggered it and what it gave back */
+	pr_info("Killed %d at pressure %lu: MemAvailable %ld -> %ld MiB, swap free %ld MiB, %lld ms\n",
+		nr_to_kill, pressure,
+		avail >> (20 - PAGE_SHIFT),
+		si_mem_available() >> (20 - PAGE_SHIFT),
+		swap_free >> (20 - PAGE_SHIFT),
+		ktime_ms_delta(ktime_get(), start));
 
 	/* Clean up for future reclaims but let the reaper thread keep going */
 	write_lock(&mm_free_lock);
@@ -513,6 +525,7 @@ static int simple_lmk_vmpressure_cb(struct notifier_block *nb,
 	if (atomic_read(&needs_reclaim) >= level)
 		return NOTIFY_OK;
 
+	WRITE_ONCE(reclaim_pressure, pressure);
 	atomic_set(&needs_reclaim, level);
 	smp_mb__after_atomic();
 	if (waitqueue_active(&oom_waitq))

@@ -69,13 +69,23 @@ static void victim_swap(void *lhs_ptr, void *rhs_ptr, int size)
 	swap(*lhs, *rhs);
 }
 
-static unsigned long get_total_mm_pages(struct mm_struct *mm)
-{
-	unsigned long pages = 0;
-	int i;
+/*
+ * ES301: size a victim by what killing it gives back: anon, shmem and swap.
+ * Its file pages are mostly shared code (zygote preloads, the ART boot
+ * image, system libraries) that stays in the page cache after it dies, and
+ * counting them let a round that "found" MIN_FREE_PAGES free a fraction of
+ * that. lowmemorykiller.count_file_pages=Y restores the total-mm size.
+ */
+static bool count_file_pages;
 
-	for (i = 0; i < NR_MM_COUNTERS; i++)
-		pages += get_mm_counter(mm, i);
+static unsigned long get_victim_pages(struct mm_struct *mm)
+{
+	unsigned long pages = get_mm_counter(mm, MM_ANONPAGES) +
+			      get_mm_counter(mm, MM_SHMEMPAGES) +
+			      get_mm_counter(mm, MM_SWAPENTS);
+
+	if (READ_ONCE(count_file_pages))
+		pages += get_mm_counter(mm, MM_FILEPAGES);
 
 	return pages;
 }
@@ -140,7 +150,7 @@ static unsigned long find_victims(int *vindex, short lowest_adj)
 			/* Store this potential victim away for later */
 			victims[*vindex].tsk = vtsk;
 			victims[*vindex].mm = vtsk->mm;
-			victims[*vindex].size = get_total_mm_pages(vtsk->mm);
+			victims[*vindex].size = get_victim_pages(vtsk->mm);
 
 			/* Count the number of pages that have been found */
 			pages_found += victims[*vindex].size;
@@ -556,6 +566,7 @@ late_initcall(simple_lmk_late_init);
 #define MODULE_PARAM_PREFIX "lowmemorykiller."
 module_param_cb(minfree, &simple_lmk_init_ops, NULL, 0200);
 module_param(minavail_mib, uint, 0644);
+module_param(count_file_pages, bool, 0644);
 
 /*
  * Android's lmkd, on seeing lowmemorykiller.minfree, switches to its

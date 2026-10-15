@@ -323,11 +323,18 @@ static int psci_sys_reset(struct notifier_block *nb, unsigned long action,
 	if ((reboot_mode == REBOOT_WARM || reboot_mode == REBOOT_SOFT) &&
 	    psci_system_reset2_supported) {
 		/*
-		 * reset_type[31] = 0 (architectural)
-		 * reset_type[30:0] = 0 (SYSTEM_WARM_RESET)
-		 * cookie = 0 (ignored by the implementation)
+		 * reset_type[31] = 0 (architectural) and
+		 * reset_type[30:0] = 0 (SYSTEM_WARM_RESET) by default;
+		 * a vendor hook may override reset_type/cookie to request
+		 * a vendor-defined reset (reset_type[31] = 1) instead.
 		 */
-		invoke_psci_fn(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2), 0, 0, 0);
+		u32 reset_type = 0;
+		u64 cookie = 0;
+
+		trace_android_rvh_psci_system_reset2(&reset_type, &cookie);
+
+		invoke_psci_fn(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2), reset_type,
+			       cookie, 0);
 	} else {
 		invoke_psci_fn(PSCI_0_2_FN_SYSTEM_RESET, 0, 0, 0);
 	}

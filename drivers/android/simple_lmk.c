@@ -24,6 +24,16 @@
 /* Timeout in jiffies for each reclaim */
 #define RECLAIM_EXPIRES msecs_to_jiffies(CONFIG_ANDROID_SIMPLE_LMK_TIMEOUT_MSEC)
 
+/* Lowest adj the MemAvailable floor may kill (CACHED_APP_MIN_ADJ) */
+#define FLOOR_MIN_ADJ 900
+
+/* What a pending reclaim request may kill */
+enum {
+	RECLAIM_NONE,
+	RECLAIM_CACHED,		/* MemAvailable floor: cached processes only */
+	RECLAIM_ALL		/* reclaim is failing: any positive adj */
+};
+
 struct victim_info {
 	struct task_struct *tsk;
 	struct mm_struct *mm;
@@ -38,7 +48,8 @@ static DECLARE_COMPLETION(reclaim_done);
 static __cacheline_aligned_in_smp DEFINE_RWLOCK(mm_free_lock);
 static int nr_victims;
 static bool reclaim_active;
-static atomic_t needs_reclaim = ATOMIC_INIT(0);
+static unsigned long floor_backoff;
+static atomic_t needs_reclaim = ATOMIC_INIT(RECLAIM_NONE);
 static atomic_t needs_reap = ATOMIC_INIT(0);
 static atomic_t nr_killed = ATOMIC_INIT(0);
 
@@ -69,7 +80,7 @@ static unsigned long get_total_mm_pages(struct mm_struct *mm)
 	return pages;
 }
 
-static unsigned long find_victims(int *vindex)
+static unsigned long find_victims(int *vindex, short lowest_adj)
 {
 	short i, min_adj = SHRT_MAX, max_adj = 0;
 	unsigned long pages_found = 0;
@@ -86,11 +97,12 @@ static unsigned long find_victims(int *vindex)
 		 * naturally excludes tasks which shouldn't be killed, like init
 		 * and kthreads. Although oom_score_adj can still be changed
 		 * while this code runs, it doesn't really matter; we just need
-		 * a snapshot of the task's adj.
+		 * a snapshot of the task's adj. The MemAvailable floor raises
+		 * lowest_adj so it only ever sees cached processes.
 		 */
 		sig = tsk->signal;
 		adj = READ_ONCE(sig->oom_score_adj);
-		if (adj < 0 || sig->flags & SIGNAL_GROUP_EXIT ||
+		if (adj < lowest_adj || sig->flags & SIGNAL_GROUP_EXIT ||
 		    (thread_group_empty(tsk) && tsk->flags & PF_EXITING))
 			continue;
 
@@ -197,7 +209,7 @@ static void set_task_rt_prio(struct task_struct *tsk, int priority)
 	sched_setscheduler_nocheck(tsk, SCHED_RR, &rt_prio);
 }
 
-static void scan_and_kill(void)
+static int scan_and_kill(short lowest_adj)
 {
 	int i, nr_to_kill, nr_found = 0;
 	unsigned long pages_found;
@@ -211,10 +223,12 @@ static void scan_and_kill(void)
 	write_unlock(&mm_free_lock);
 
 	/* Populate the victims array with tasks sorted by adj and then size */
-	pages_found = find_victims(&nr_found);
+	pages_found = find_victims(&nr_found, lowest_adj);
 	if (unlikely(!nr_found)) {
-		pr_err_ratelimited("No processes available to kill!\n");
-		return;
+		/* The floor running out of cached processes is normal */
+		if (!lowest_adj)
+			pr_err_ratelimited("No processes available to kill!\n");
+		return 0;
 	}
 
 	/* Minimize the number of victims if we found more pages than needed */
@@ -313,6 +327,8 @@ static void scan_and_kill(void)
 	reclaim_active = false;
 	nr_killed = (atomic_t)ATOMIC_INIT(0);
 	write_unlock(&mm_free_lock);
+
+	return nr_to_kill;
 }
 
 static int simple_lmk_reclaim_thread(void *data)
@@ -322,9 +338,19 @@ static int simple_lmk_reclaim_thread(void *data)
 	set_freezable();
 
 	while (1) {
+		bool floor;
+
 		wait_event_freezable(oom_waitq, atomic_read(&needs_reclaim));
-		scan_and_kill();
-		atomic_set(&needs_reclaim, 0);
+		floor = atomic_read(&needs_reclaim) == RECLAIM_CACHED;
+
+		/*
+		 * With no cached process left, the floor would rescan the task
+		 * list for every pressure window. Let it rest for a while;
+		 * failing reclaim (pressure == 100) is never held back.
+		 */
+		if (!scan_and_kill(floor ? FLOOR_MIN_ADJ : 0) && floor)
+			WRITE_ONCE(floor_backoff, jiffies + RECLAIM_EXPIRES);
+		atomic_set(&needs_reclaim, RECLAIM_NONE);
 	}
 
 	return 0;
@@ -453,6 +479,9 @@ void simple_lmk_mm_freed(struct mm_struct *mm)
  * MemAvailable has already hit zero and tasks are stalling in direct
  * reclaim. Also trigger while the root window keeps closing with less than
  * this much available, so the kill lands a few hundred MB before exhaustion.
+ * Reclaim still works at that point, so the floor only kills cached
+ * processes (adj >= FLOOR_MIN_ADJ); the previous app, home, services and
+ * perceptible apps are left to the pressure == 100 path, as upstream.
  * Runtime tunable: /sys/module/lowmemorykiller/parameters/minavail_mib (0 = off).
  */
 static unsigned int minavail_mib = 512;
@@ -460,13 +489,24 @@ static unsigned int minavail_mib = 512;
 static int simple_lmk_vmpressure_cb(struct notifier_block *nb,
 				    unsigned long pressure, void *data)
 {
-	if (pressure == 100 ||
-	    (minavail_mib && si_mem_available() < ((unsigned long)minavail_mib << (20 - PAGE_SHIFT)))) {
-		atomic_set(&needs_reclaim, 1);
-		smp_mb__after_atomic();
-		if (waitqueue_active(&oom_waitq))
-			wake_up(&oom_waitq);
-	}
+	int level;
+
+	if (pressure == 100)
+		level = RECLAIM_ALL;
+	else if (minavail_mib &&
+		 time_after_eq(jiffies, READ_ONCE(floor_backoff)) &&
+		 si_mem_available() < ((unsigned long)minavail_mib << (20 - PAGE_SHIFT)))
+		level = RECLAIM_CACHED;
+	else
+		return NOTIFY_OK;
+
+	if (atomic_read(&needs_reclaim) >= level)
+		return NOTIFY_OK;
+
+	atomic_set(&needs_reclaim, level);
+	smp_mb__after_atomic();
+	if (waitqueue_active(&oom_waitq))
+		wake_up(&oom_waitq);
 
 	return NOTIFY_OK;
 }

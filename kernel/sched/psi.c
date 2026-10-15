@@ -1297,20 +1297,14 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 	u32 threshold_us;
 	bool privileged;
 	u32 window_us;
+	bool inert;
 
 	if (static_branch_likely(&psi_disabled))
 		return ERR_PTR(-EOPNOTSUPP);
 
-	/*
-	 * Simple LMK owns low-memory kills. Android's lmkd only defers to the
-	 * in-kernel killer (lowmemorykiller.minfree) when its PSI setup fails,
-	 * so refuse system-level memory triggers - the equivalent of the !PSI
-	 * requirement in Sultan Alsawaf's original Kconfig, without giving up
-	 * PSI accounting or cgroup triggers.
-	 */
-	if (IS_ENABLED(CONFIG_ANDROID_SIMPLE_LMK) && res == PSI_MEM &&
-	    group == &psi_system)
-		return ERR_PTR(-EOPNOTSUPP);
+	/* Simple LMK owns low-memory kills, see the end of this function */
+	inert = IS_ENABLED(CONFIG_ANDROID_SIMPLE_LMK) && res == PSI_MEM &&
+		group == &psi_system;
 
 	/*
 	 * Checking the privilege on file->f_cred or selinux enabled here imply
@@ -1367,6 +1361,22 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 		init_waitqueue_head(&t->event_wait);
 	t->pending_event = false;
 	t->aggregator = privileged ? PSI_POLL : PSI_AVGS;
+
+	/*
+	 * System-level memory triggers are lmkd's. It asks for them at boot
+	 * completion even when it runs in in-kernel (lowmemorykiller.minfree)
+	 * mode, and exits if the write fails: one crash report per boot and a
+	 * restart by init, for a service init treats as critical. Hand it a
+	 * trigger that is never linked into the group instead. The write
+	 * succeeds, the fd polls normally and no event ever fires, so lmkd
+	 * stays up and never kills - the equivalent of the !PSI requirement in
+	 * Sultan Alsawaf's original Kconfig, without giving up PSI accounting
+	 * or cgroup triggers. psi_trigger_destroy() skips an empty node.
+	 */
+	if (inert) {
+		INIT_LIST_HEAD(&t->node);
+		return t;
+	}
 
 	if (privileged) {
 		mutex_lock(&group->rtpoll_trigger_lock);

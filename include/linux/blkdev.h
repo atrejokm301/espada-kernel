@@ -1174,12 +1174,16 @@ static inline void blk_flush_plug(struct blk_plug *plug, bool async)
 		__blk_flush_plug(plug, async);
 }
 
-static __always_inline void blk_plug_invalidate_ts(void)
+/*
+ * tsk == current here
+ */
+static inline void blk_plug_invalidate_ts(struct task_struct *tsk)
 {
-	if (unlikely(current->flags & PF_BLOCK_TS)) {
-		current->plug->cur_ktime = 0;
-		current->flags &= ~PF_BLOCK_TS;
-	}
+	struct blk_plug *plug = tsk->plug;
+
+	if (plug)
+		plug->cur_ktime = 0;
+	current->flags &= ~PF_BLOCK_TS;
 }
 
 int blkdev_issue_flush(struct block_device *bdev);
@@ -1205,7 +1209,7 @@ static inline void blk_flush_plug(struct blk_plug *plug, bool async)
 {
 }
 
-static inline void blk_plug_invalidate_ts(void)
+static inline void blk_plug_invalidate_ts(struct task_struct *tsk)
 {
 }
 

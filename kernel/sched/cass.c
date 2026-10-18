@@ -2,6 +2,8 @@
 /*
  * Copyright (C) 2023-2025 Sultan Alsawaf <sultan@kerneltoast.com>.
  */
+#include <linux/moduleparam.h>
+
 /*
  * PORT NOTE (grizzly / spacecraft, 6.1.145 -> 6.12.69, 2026-08-25)
  *
@@ -59,7 +61,9 @@ struct cass_cpu_cand {
 	unsigned long cap_orig;
 	unsigned long eff_util;
 	unsigned long hard_util;
+	unsigned long nrg;
 	unsigned long util;
+	bool nrg_valid;
 };
 
 static __always_inline
@@ -115,6 +119,127 @@ bool cass_prime_cpu(const struct cass_cpu_cand *c)
 	 */
 	return c->cpu == nr_cpu_ids - 1 &&
 	       arch_scale_cpu_capacity(nr_cpu_ids - 2) != SCHED_CAPACITY_SCALE;
+}
+
+/*
+ * Returns true if @a and @b are in different clusters, are equally idle, both
+ * comfortably fit @p and neither is overloaded. That is where GRIZZLY FIX 2
+ * picks between them instead of the relative-utilization compare.
+ */
+static __always_inline
+bool cass_cross_cluster_fit(const struct cass_cpu_cand *a,
+			    const struct cass_cpu_cand *b, unsigned long p_util)
+{
+	return a->cap_orig != b->cap_orig && !a->exit_lat == !b->exit_lat &&
+	       a->eff_util < a->cap_max && b->eff_util < b->cap_max &&
+	       fits_capacity(p_util, a->cap_max) &&
+	       fits_capacity(p_util, b->cap_max);
+}
+
+/*
+ * GRIZZLY FIX 5: let the energy model settle GRIZZLY FIX 2's choice (see
+ * cass_cpu_better()). Writing N to /sys/module/cass/parameters/em_cluster
+ * restores the plain smaller-CPU preference, for A/B measurements.
+ */
+static bool cass_em_cluster __read_mostly = true;
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "cass."
+module_param_named(em_cluster, cass_em_cluster, bool, 0644);
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX KBUILD_MODNAME "."
+
+#define CASS_NR_PD_CACHE 4
+
+struct cass_nrg_ctx {
+	struct task_struct *p;
+	unsigned long p_util;
+	int nr_pd;
+	struct {
+		struct em_perf_domain *pd;
+		/* The domain without @p: busy time, busiest request, energy */
+		unsigned long busy;
+		unsigned long max_util;
+		unsigned long nrg;
+	} pd_cache[CASS_NR_PD_CACHE];
+};
+
+/*
+ * Estimates the energy that waking @ctx->p on @c->cpu adds to that CPU's
+ * performance domain, the way find_energy_efficient_cpu() does: the domain's
+ * busy time is priced at the OPP its busiest CPU asks schedutil for, with @p
+ * on @c->cpu and without @p, and the difference is stored in @c->nrg. The
+ * per-domain part is computed once per wakeup. @c->nrg_valid stays false if
+ * there is no energy model, so the caller keeps the capacity rule.
+ */
+static void cass_cand_nrg(struct cass_nrg_ctx *ctx, struct cass_cpu_cand *c)
+{
+	unsigned long cap, pd_cap, util, eff, lo, hi, nrg;
+	struct task_struct *p = ctx->p;
+	struct em_perf_domain *pd;
+	int cpu, i;
+
+	if (c->nrg_valid)
+		return;
+
+	pd = em_cpu_get(c->cpu);
+	if (!pd)
+		return;
+
+	/* Every CPU in a domain has the same capacity and pressure */
+	cap = get_actual_cpu_capacity(c->cpu);
+	pd_cap = cap * cpumask_weight_and(em_span_cpus(pd), cpu_active_mask);
+
+	rcu_read_lock();
+	for (i = 0; i < ctx->nr_pd; i++) {
+		if (ctx->pd_cache[i].pd == pd)
+			break;
+	}
+
+	if (i == ctx->nr_pd) {
+		if (i == CASS_NR_PD_CACHE)
+			goto unlock;
+
+		ctx->pd_cache[i].pd = pd;
+		ctx->pd_cache[i].busy = 0;
+		ctx->pd_cache[i].max_util = 0;
+		for_each_cpu_and(cpu, em_span_cpus(pd), cpu_active_mask) {
+			util = cpu_util(cpu, p, -1, 0);
+			ctx->pd_cache[i].busy +=
+				effective_cpu_util(cpu, util, NULL, NULL);
+
+			util = cpu_util(cpu, p, -1, 1);
+			eff = effective_cpu_util(cpu, util, &lo, &hi);
+			eff = sugov_effective_cpu_perf(cpu, eff, lo, hi);
+			ctx->pd_cache[i].max_util =
+				max(ctx->pd_cache[i].max_util, eff);
+		}
+		ctx->pd_cache[i].busy = min(ctx->pd_cache[i].busy, pd_cap);
+		ctx->pd_cache[i].nrg =
+			em_cpu_energy(pd, min(ctx->pd_cache[i].max_util, cap),
+				      ctx->pd_cache[i].busy, cap);
+		ctx->nr_pd++;
+	}
+
+	/* What @c->cpu asks for with @p on it, including @p's uclamp */
+	util = cpu_util(c->cpu, p, c->cpu, 1);
+	eff = effective_cpu_util(c->cpu, util, &lo, &hi);
+	if (uclamp_is_used()) {
+		lo = max(lo, uclamp_eff_value(p, UCLAMP_MIN));
+		if (uclamp_rq_is_idle(cpu_rq(c->cpu)))
+			hi = uclamp_eff_value(p, UCLAMP_MAX);
+		else
+			hi = max(hi, uclamp_eff_value(p, UCLAMP_MAX));
+	}
+	eff = sugov_effective_cpu_perf(c->cpu, eff, lo, hi);
+	eff = max(eff, ctx->pd_cache[i].max_util);
+
+	nrg = em_cpu_energy(pd, min(eff, cap),
+			    min(ctx->pd_cache[i].busy + ctx->p_util, pd_cap),
+			    cap);
+	c->nrg = nrg > ctx->pd_cache[i].nrg ? nrg - ctx->pd_cache[i].nrg : 0;
+	c->nrg_valid = true;
+unlock:
+	rcu_read_unlock();
 }
 
 /* Returns true if @a is a better CPU than @b */
@@ -186,13 +311,30 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 	 * busy candidates (has_idle is never set for it), and this compare
 	 * would then put it behind a running task on a little CPU while a mid
 	 * CPU sits idle, before the idle check below is ever reached.
+	 *
+	 * GRIZZLY FIX 5: "little wins" holds at equal frequency, but the two
+	 * little CPUs are one frequency domain shared with everything Android
+	 * pins to them, so an idle little can sit in a domain its sibling holds
+	 * near the top OPP. There the measured EM costs 181 pJ per cycle, a mid
+	 * near its floor 73-86. Traced on grizzly (scripted use, 6 x 82 s):
+	 * 68-73 % of little busy time was work that ran on a mid within a
+	 * second, and 86-90 % of it ran while a mid sat idle. So for CFS
+	 * tasks the choice is priced with the energy model (cass_cand_nrg())
+	 * and the bigger CPU wins when it is clearly (by more than 1/16)
+	 * cheaper. Otherwise, and for RT tasks, which have no utilization to
+	 * price, the smaller CPU wins as before.
 	 */
-	if (!a->exit_lat == !b->exit_lat &&
-	    a->eff_util < a->cap_max && b->eff_util < b->cap_max &&
-	    fits_capacity(p_util, a->cap_max) &&
-	    fits_capacity(p_util, b->cap_max) &&
-	    cass_cmp(b->cap_orig, a->cap_orig))
+	if (cass_cross_cluster_fit(a, b, p_util)) {
+		const struct cass_cpu_cand *s = a->cap_orig < b->cap_orig ? a : b;
+		const struct cass_cpu_cand *l = s == a ? b : a;
+
+		if (s->nrg_valid && l->nrg_valid &&
+		    l->nrg + (l->nrg >> 4) < s->nrg)
+			res = l == a;
+		else
+			res = s == a;
 		goto done;
+	}
 
 	/*
 	 * Prefer the CPU that is idle. Only relevant for uclamped tasks: for
@@ -264,6 +406,7 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	/* Initialize @best such that @best always has a valid CPU at the end */
 	struct cass_cpu_cand cands[2], *best = cands;
 	int this_cpu = raw_smp_processor_id();
+	struct cass_nrg_ctx nrg_ctx;
 	unsigned long p_util, uc_min;
 	bool has_idle = false;
 	int cidx = 0, cpu;
@@ -274,6 +417,11 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	 */
 	p_util = rt ? 0 : task_util_est(p);
 	uc_min = uclamp_eff_value(p, UCLAMP_MIN);
+
+	/* Energy estimates are only made if a choice between clusters needs one */
+	nrg_ctx.p = p;
+	nrg_ctx.p_util = p_util;
+	nrg_ctx.nr_pd = 0;
 
 	/*
 	 * Find the best CPU to wake @p on. Although idle_get_state() requires
@@ -308,6 +456,7 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		 * only running task.
 		 */
 		curr->cpu = cpu;
+		curr->nrg_valid = false;
 		if ((sync && cpu == this_cpu && rq->nr_running == 1) ||
 		    available_idle_cpu(cpu) || sched_idle_cpu(cpu)) {
 			/*
@@ -380,6 +529,17 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		 */
 		curr->util =
 			curr->util * SCHED_CAPACITY_SCALE / curr->cap_no_therm;
+
+		/*
+		 * GRIZZLY FIX 5: price a choice between clusters (CFS only).
+		 * The prime CPU is left out: avoiding it is decided earlier.
+		 */
+		if (best != curr && !rt && READ_ONCE(cass_em_cluster) &&
+		    !cass_prime_cpu(curr) && !cass_prime_cpu(best) &&
+		    cass_cross_cluster_fit(curr, best, p_util)) {
+			cass_cand_nrg(&nrg_ctx, curr);
+			cass_cand_nrg(&nrg_ctx, best);
+		}
 
 		/*
 		 * Check if this CPU is better than the best CPU found so far.

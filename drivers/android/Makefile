@@ -8,4 +8,5 @@ obj-$(CONFIG_ANDROID_VENDOR_HOOKS) += vendor_hooks.o
 obj-$(CONFIG_ANDROID_SIMPLE_LMK)	+= simple_lmk.o
 obj-$(CONFIG_ANDROID_DEBUG_KINFO)	+= debug_kinfo.o
 obj-$(CONFIG_ANDROID_WRAPFD)		+= wrapfd.o
+obj-$(CONFIG_GUEST_DMA_PROXY)		+= guest_dma_proxy.o
 obj-y += binder/

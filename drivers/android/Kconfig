@@ -147,4 +147,13 @@ config ANDROID_SIMPLE_LMK_TIMEOUT_MSEC
 
 endif
 
+config GUEST_DMA_PROXY
+	tristate "Guest DMA-Buf Proxy Driver"
+	select DMA_SHARED_BUFFER
+	help
+	  This driver provides an ioctl interface for guest userspace to convert
+	  hypervisor-injected physical address ranges (e.g., from host shared memory)
+	  into standard dma-buf file descriptors.
+	  Say Y or M here if building a kernel for Microdroid or guest pVMs.
+
 endmenu

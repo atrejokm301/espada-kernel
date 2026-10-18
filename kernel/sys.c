@@ -78,6 +78,7 @@
 #include "uid16.h"
 
 #include <trace/hooks/sys.h>
+#include <linux/uname_spoof.h>
 
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
@@ -1355,6 +1356,20 @@ SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 		return -EFAULT;
 	if (override_architecture(name))
 		return -EFAULT;
+#ifdef CONFIG_UNAME_SPOOF
+	if (uname_spoof_should_spoof()) {
+		const char *rel = uname_spoof_get_release();
+
+		if (rel) {
+			char spoof_rel[__NEW_UTS_LEN + 1] = {};
+
+			strscpy(spoof_rel, rel, sizeof(spoof_rel));
+			if (copy_to_user(name->release, spoof_rel,
+					 sizeof(spoof_rel)))
+				return -EFAULT;
+		}
+	}
+#endif
 	return 0;
 }
 

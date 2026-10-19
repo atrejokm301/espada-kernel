@@ -3262,6 +3262,7 @@ static int f2fs_move_file_range(struct file *file_in, loff_t pos_in,
 	}
 
 	/* verify the end result is block aligned */
+	ret = -EINVAL;
 	if (!IS_ALIGNED(pos_in, F2FS_BLKSIZE) ||
 			!IS_ALIGNED(pos_in + len, F2FS_BLKSIZE) ||
 			!IS_ALIGNED(pos_out, F2FS_BLKSIZE))

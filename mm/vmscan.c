@@ -5152,7 +5152,7 @@ static int shrink_one(struct lruvec *lruvec, struct scan_control *sc)
 			   sc->nr_reclaimed - reclaimed);
 		/* MGLRU only gets here for whole-system reclaim */
 		vmpressure_global(sc->nr_scanned - scanned,
-				  sc->nr_reclaimed - reclaimed);
+				  sc->nr_reclaimed - reclaimed, sc->order);
 	}
 
 	flush_reclaim_state(sc);
@@ -6291,7 +6291,8 @@ static void shrink_node_memcgs(pg_data_t *pgdat, struct scan_control *sc)
 				   sc->nr_reclaimed - reclaimed);
 			if (root_reclaim(sc))
 				vmpressure_global(sc->nr_scanned - scanned,
-						  sc->nr_reclaimed - reclaimed);
+						  sc->nr_reclaimed - reclaimed,
+						  sc->order);
 		}
 
 #ifdef CONFIG_ANDROID_VENDOR_OEM_DATA
@@ -6658,7 +6659,7 @@ retry:
 			vmpressure_prio(sc->gfp_mask, sc->target_mem_cgroup,
 					sc->priority);
 			if (root_reclaim(sc))
-				vmpressure_global_prio(sc->priority);
+				vmpressure_global_prio(sc->priority, sc->order);
 		}
 		sc->nr_scanned = 0;
 		shrink_zones(zonelist, sc);

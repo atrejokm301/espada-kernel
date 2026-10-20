@@ -196,20 +196,22 @@ static void vmpressure_global_account(unsigned long scanned, unsigned long recla
 		schedule_work(&vmpressure_global_work);
 }
 
-void vmpressure_global(unsigned long scanned, unsigned long reclaimed)
+void vmpressure_global(unsigned long scanned, unsigned long reclaimed, int order)
 {
 	/*
-	 * A pass that scanned nothing says nothing (MGLRU walks many memcgs
-	 * with nothing to scan); the critical case is vmpressure_global_prio().
+	 * Costly-order allocations make reclaim look inefficient when it is
+	 * really just that the high order is hard to satisfy. A pass that
+	 * scanned nothing says nothing (MGLRU walks many memcgs with nothing
+	 * to scan); the critical case is vmpressure_global_prio().
 	 */
-	if (scanned)
+	if (scanned && order <= PAGE_ALLOC_COSTLY_ORDER)
 		vmpressure_global_account(scanned, reclaimed);
 }
 
-void vmpressure_global_prio(int prio)
+void vmpressure_global_prio(int prio, int order)
 {
 	/* Same 'critical' signal vmpressure_prio() gives the memcg windows */
-	if (prio <= vmpressure_level_critical_prio)
+	if (prio <= vmpressure_level_critical_prio && order <= PAGE_ALLOC_COSTLY_ORDER)
 		vmpressure_global_account(vmpressure_win, 0);
 }
 #endif

@@ -1538,11 +1538,12 @@ static inline bool reclaim_pt_is_enabled(unsigned long start, unsigned long end,
  * whole-system reclaim only (mm/vmscan.c).
  */
 #if defined(CONFIG_MEMCG) && defined(CONFIG_ANDROID_SIMPLE_LMK)
-void vmpressure_global(unsigned long scanned, unsigned long reclaimed);
-void vmpressure_global_prio(int prio);
+void vmpressure_global(unsigned long scanned, unsigned long reclaimed, int order);
+void vmpressure_global_prio(int prio, int order);
 #else
-static inline void vmpressure_global(unsigned long scanned, unsigned long reclaimed) {}
-static inline void vmpressure_global_prio(int prio) {}
+static inline void vmpressure_global(unsigned long scanned, unsigned long reclaimed,
+				     int order) {}
+static inline void vmpressure_global_prio(int prio, int order) {}
 #endif
 
 #endif	/* __MM_INTERNAL_H */

@@ -361,9 +361,11 @@ static int simple_lmk_reclaim_thread(void *data)
 
 	while (1) {
 		bool floor;
+		int level;
 
 		wait_event_freezable(oom_waitq, atomic_read(&needs_reclaim));
-		floor = atomic_read(&needs_reclaim) == RECLAIM_CACHED;
+		level = atomic_read(&needs_reclaim);
+		floor = level == RECLAIM_CACHED;
 
 		/*
 		 * With no cached process left, the floor would rescan the task
@@ -372,7 +374,12 @@ static int simple_lmk_reclaim_thread(void *data)
 		 */
 		if (!scan_and_kill(floor ? FLOOR_MIN_ADJ : 0) && floor)
 			WRITE_ONCE(floor_backoff, jiffies + RECLAIM_EXPIRES);
-		atomic_set(&needs_reclaim, RECLAIM_NONE);
+		/*
+		 * A failing-reclaim request that came in during a floor round
+		 * raised the level; keep it for the next round instead of
+		 * wiping it.
+		 */
+		atomic_cmpxchg(&needs_reclaim, level, RECLAIM_NONE);
 	}
 
 	return 0;

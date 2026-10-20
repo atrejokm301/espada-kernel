@@ -499,34 +499,58 @@ void simple_lmk_mm_freed(struct mm_struct *mm)
  * ES301: MemAvailable floor. Upstream Simple LMK only reacts once reclaim
  * fails outright (pressure == 100), which on a 16 GB phone means
  * MemAvailable has already hit zero and tasks are stalling in direct
- * reclaim. Also trigger while the root window keeps closing with less than
+ * reclaim. Also trigger while the global window keeps closing with less than
  * this much available, so the kill lands a few hundred MB before exhaustion.
  * Reclaim still works at that point, so the floor only kills cached
  * processes (adj >= FLOOR_MIN_ADJ); the previous app, home, services and
  * perceptible apps are left to the pressure == 100 path, as upstream.
  * Runtime tunable: /sys/module/lowmemorykiller/parameters/minavail_mib (0 = off).
+ *
+ * Every closed window reaches the callback, with the share of it that was
+ * direct reclaim. With swap full kswapd keeps up by dropping file cache and
+ * nothing ever stalls, so a floor that only looked at stalled windows never
+ * ran and the first kill came at MemAvailable 0. A kswapd-only window may use
+ * the floor only once swap is nearly full, though: while zram still has room,
+ * cached apps can be swapped instead of killed, as Android's lmkd also waits
+ * for its low-swap percentage. Killing past cached processes needs a window
+ * that mostly stalled, whatever the pressure: MGLRU's kswapd reads 90-100
+ * while it scans pages it cannot reclaim, with gigabytes free.
  */
 static unsigned int minavail_mib = 512;
+
+/* Under 1/14 (~7%) of swap free: lmkd's low-swap percentage on this phone. No swap counts. */
+static bool simple_lmk_swap_low(void)
+{
+	return get_nr_swap_pages() <= total_swap_pages / 14;
+}
 
 static int simple_lmk_vmpressure_cb(struct notifier_block *nb,
 				    unsigned long pressure, void *data)
 {
-	int level;
+	unsigned int stall_pct = data ? *(unsigned int *)data : 0;
+	int level, old;
 
-	if (pressure == 100)
+	if (pressure == 100 && stall_pct >= 50)
 		level = RECLAIM_ALL;
-	else if (minavail_mib &&
+	else if (minavail_mib && (stall_pct || simple_lmk_swap_low()) &&
 		 time_after_eq(jiffies, READ_ONCE(floor_backoff)) &&
 		 si_mem_available() < ((unsigned long)minavail_mib << (20 - PAGE_SHIFT)))
 		level = RECLAIM_CACHED;
 	else
 		return NOTIFY_OK;
 
-	if (atomic_read(&needs_reclaim) >= level)
-		return NOTIFY_OK;
+	/*
+	 * Windows close on several CPUs at once now that they are reported
+	 * directly; only ever raise the request, so a floor report can't
+	 * lower a concurrent failing-reclaim one.
+	 */
+	old = atomic_read(&needs_reclaim);
+	do {
+		if (old >= level)
+			return NOTIFY_OK;
+	} while (!atomic_try_cmpxchg(&needs_reclaim, &old, level));
 
 	WRITE_ONCE(reclaim_pressure, pressure);
-	atomic_set(&needs_reclaim, level);
 	smp_mb__after_atomic();
 	if (waitqueue_active(&oom_waitq))
 		wake_up(&oom_waitq);

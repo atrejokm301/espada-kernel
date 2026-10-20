@@ -1533,5 +1533,16 @@ static inline bool reclaim_pt_is_enabled(unsigned long start, unsigned long end,
 }
 #endif /* CONFIG_PT_RECLAIM */
 
+/*
+ * ES301: Simple LMK's global pressure window (mm/vmpressure.c), fed by
+ * whole-system reclaim only (mm/vmscan.c).
+ */
+#if defined(CONFIG_MEMCG) && defined(CONFIG_ANDROID_SIMPLE_LMK)
+void vmpressure_global(unsigned long scanned, unsigned long reclaimed);
+void vmpressure_global_prio(int prio);
+#else
+static inline void vmpressure_global(unsigned long scanned, unsigned long reclaimed) {}
+static inline void vmpressure_global_prio(int prio) {}
+#endif
 
 #endif	/* __MM_INTERNAL_H */

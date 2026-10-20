@@ -20,6 +20,7 @@
 #include <linux/swap.h>
 #include <linux/printk.h>
 #include <linux/vmpressure.h>
+#include "internal.h"
 
 /*
  * The window size (vmpressure_win) is the number of scanned pages before
@@ -94,11 +95,14 @@ int vmpressure_notifier_unregister(struct notifier_block *nb)
 }
 
 /*
- * ES301 global window (Sultan's global_vmpressure equivalent). Every
- * vmpressure() call is accounted here regardless of memcg or the tree flag:
- * with MGLRU the global reclaim path only reports per-memcg (tree=false)
- * efficiency, which upstream discards for the root, so the root memcg's own
- * window never closes. Pages scanned by direct reclaim count as "stall".
+ * ES301 global window (Sultan's global_vmpressure equivalent), fed from the
+ * vmscan call sites by whole-system reclaim: with MGLRU the global reclaim
+ * path only reports per-memcg (tree=false) efficiency, which upstream
+ * discards for the root, so the root memcg's own window never closes.
+ * Reclaim against a memcg limit stays out: an app at its own memory.high
+ * says nothing about the system. As in Sultan's "Don't exclude any
+ * allocation types", every allocation type counts. Pages scanned by direct
+ * reclaim count as "stall".
  */
 #define VMPRESSURE_ALLOCSTALL_THRESHOLD	70
 static DEFINE_SPINLOCK(vmpressure_global_lock);
@@ -192,8 +196,22 @@ static void vmpressure_global_account(unsigned long scanned, unsigned long recla
 		schedule_work(&vmpressure_global_work);
 }
 
-#else
-static inline void vmpressure_global_account(unsigned long scanned, unsigned long reclaimed) { }
+void vmpressure_global(unsigned long scanned, unsigned long reclaimed)
+{
+	/*
+	 * A pass that scanned nothing says nothing (MGLRU walks many memcgs
+	 * with nothing to scan); the critical case is vmpressure_global_prio().
+	 */
+	if (scanned)
+		vmpressure_global_account(scanned, reclaimed);
+}
+
+void vmpressure_global_prio(int prio)
+{
+	/* Same 'critical' signal vmpressure_prio() gives the memcg windows */
+	if (prio <= vmpressure_level_critical_prio)
+		vmpressure_global_account(vmpressure_win, 0);
+}
 #endif
 
 static struct vmpressure *vmpressure_parent(struct vmpressure *vmpr)
@@ -402,9 +420,6 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 	 */
 	if (!scanned)
 		return;
-
-	/* ES301: global window for Simple LMK, before the per-memcg bookkeeping */
-	vmpressure_global_account(scanned, reclaimed);
 
 	if (tree) {
 		spin_lock(&vmpr->sr_lock);

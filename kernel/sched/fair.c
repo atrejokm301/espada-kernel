@@ -4773,7 +4773,9 @@ static inline void migrate_se_pelt_lag(struct sched_entity *se)
 		 */
 		now = lut;
 	else
-		now += sched_clock_cpu(cpu_of(rq)) - u64_u32_load(rq->clock_idle);
+		/* rq_idle_lag is wall time; the PELT clock runs at the multiplier */
+		now += (sched_clock_cpu(cpu_of(rq)) - u64_u32_load(rq->clock_idle)) <<
+		       READ_ONCE(sched_pelt_lshift);
 
 	__update_load_avg_blocked_se(now, se);
 }

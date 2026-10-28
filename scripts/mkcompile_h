@@ -16,6 +16,14 @@ else
 	LINUX_COMPILE_HOST=$KBUILD_BUILD_HOST
 fi
 
+# Espada Kernel: short compiler name in /proc/version, e.g.
+# "Android (14043575, ..., based on r536225) clang version 19.0.1 (https://...)"
+# -> "Android clang 19.0.1 r536225". CONFIG_CC_VERSION_TEXT is left alone.
+CC_SHORT=$(echo "$CC_VERSION" | sed -n 's/^Android ([^)]*based on \(r[0-9a-z]*\)) clang version \([0-9.]*\).*/Android clang \2 \1/p')
+if [ -n "$CC_SHORT" ]; then
+	CC_VERSION=$CC_SHORT
+fi
+
 LD_VERSION=$(LC_ALL=C $LD -v | head -n1 |
 		sed -e 's/(compatible with [^)]*)//' -e 's/[[:space:]]*$//')
 

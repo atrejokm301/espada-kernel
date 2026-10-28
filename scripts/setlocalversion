@@ -205,4 +205,8 @@ elif [ "${LOCALVERSION+set}" != "set" ]; then
 	scm_version="$(scm_version --short)"
 fi
 
-echo "${KERNELVERSION}${file_localversion}${config_localversion}${LOCALVERSION}${scm_version}"
+# Espada Kernel: fixed release name in place of kleaf's
+# "-android16-6-maybe-dirty" stamp and CONFIG_LOCALVERSION ("-4k").
+# Modules still load: with MODVERSIONS the vermagic check skips the release.
+espada_localversion="-EspadaKernel-v1.5-Hb4.12"
+echo "${KERNELVERSION}${espada_localversion}"

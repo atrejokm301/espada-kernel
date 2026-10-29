@@ -67,6 +67,8 @@ struct ip_sf_list {
 	/* ANDROID: KABI: added by 6.12.111 f5182dfad542, built-in igmp.c only */
 	ANDROID_KABI_IGNORE(0, struct rcu_head rcu);
 };
+/* ANDROID: KABI: the hidden rcu_head grows the struct, which only igmp.c allocates */
+ANDROID_KABI_BYTE_SIZE(ip_sf_list, 32);
 
 struct ip_mc_list {
 	struct in_device	*interface;

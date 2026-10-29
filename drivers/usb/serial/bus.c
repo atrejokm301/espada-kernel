@@ -136,11 +136,12 @@ static void free_dynids(struct usb_serial_driver *drv)
 {
 	struct usb_dynid *dynid, *n;
 
-	guard(mutex)(&usb_dynids_lock);
+	spin_lock(&drv->dynids.lock);
 	list_for_each_entry_safe(dynid, n, &drv->dynids.list, node) {
 		list_del(&dynid->node);
 		kfree(dynid);
 	}
+	spin_unlock(&drv->dynids.lock);
 }
 
 const struct bus_type usb_serial_bus_type = {
@@ -156,6 +157,7 @@ int usb_serial_bus_register(struct usb_serial_driver *driver)
 	int retval;
 
 	driver->driver.bus = &usb_serial_bus_type;
+	spin_lock_init(&driver->dynids.lock);
 	INIT_LIST_HEAD(&driver->dynids.list);
 
 	retval = driver_register(&driver->driver);

@@ -800,10 +800,8 @@ int asoc_sdw_hw_params(struct snd_pcm_substream *substream,
 	 * codec in a capture stream, so that the same channels on each
 	 * codec map to different channels on the CPU.
 	 */
-	for_each_link_ch_maps(rtd->dai_link, i, ch_maps) {
-		ch_maps->cpu_ch_mask = cpu_ch_mask << (i * step);
-		ch_maps->codec_ch_mask = codec_ch_mask;
-	}
+	for_each_link_ch_maps(rtd->dai_link, i, ch_maps)
+		ch_maps->ch_mask = ch_mask << (i * step);
 
 	return 0;
 }

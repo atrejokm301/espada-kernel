@@ -760,12 +760,14 @@ static const struct usb_device_id *match_dynamic_id(struct usb_interface *intf,
 {
 	struct usb_dynid *dynid;
 
-	guard(mutex)(&usb_dynids_lock);
+	spin_lock(&drv->dynids.lock);
 	list_for_each_entry(dynid, &drv->dynids.list, node) {
 		if (usb_match_one_id(intf, &dynid->id)) {
+			spin_unlock(&drv->dynids.lock);
 			return &dynid->id;
 		}
 	}
+	spin_unlock(&drv->dynids.lock);
 	return NULL;
 }
 

@@ -1857,14 +1857,15 @@ static inline void uclamp_rq_dec(struct rq *rq, struct task_struct *p)
 	enum uclamp_id clamp_id;
 
 	/*
-	 * Avoid any overhead until uclamp is actually used by the userspace.
-	 *
-	 * The condition is constructed such that a NOP is generated when
-	 * sched_uclamp_used is disabled.
+	 * ANDROID: no uclamp_is_used() gate here. Enabling sched_uclamp_used
+	 * patches its jump label sites one by one, and the enqueue side is
+	 * patched before the dequeue in __schedule(). A task that wakes and
+	 * sleeps in that window is counted and never released, which leaves
+	 * a bucket count behind for the rest of the uptime (seen on grizzly in
+	 * bucket 11, the value of the vendor early boot boost). A dequeue of a
+	 * task that was never counted is a no-op: uclamp_rq_dec_id() returns
+	 * on !uc_se->active.
 	 */
-	if (!uclamp_is_used())
-		return;
-
 	if (unlikely(!p->sched_class->uclamp_enabled))
 		return;
 
@@ -1897,7 +1898,7 @@ static void uclamp_rq_drop_leaked(struct rq *rq)
 		for (b = 0; b < UCLAMP_BUCKETS; b++) {
 			if (likely(!uc_rq->bucket[b].tasks))
 				continue;
-			pr_warn_once("uclamp: CPU%d %s bucket %d (value %u) kept %lu task(s) on an empty runqueue, dropped\n",
+			pr_warn_ratelimited("uclamp: CPU%d %s bucket %d (value %u) kept %lu task(s) on an empty runqueue, dropped\n",
 				     cpu_of(rq), clamp_id == UCLAMP_MIN ? "min" : "max", b,
 				     (unsigned int)uc_rq->bucket[b].value,
 				     (unsigned long)uc_rq->bucket[b].tasks);
@@ -2226,7 +2227,13 @@ inline bool dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 	trace_android_rvh_dequeue_task(rq, p, flags);
 	dequeue_task_result = p->sched_class->dequeue_task(rq, p, flags);
 	trace_android_rvh_after_dequeue_task(rq, p, flags, &dequeue_task_result);
-	if (uclamp_is_used() && unlikely(!rq->nr_running))
+	/*
+	 * Throttled CFS and RT tasks keep their uclamp counts while they are
+	 * left out of rq->nr_running, so only treat the runqueue as empty
+	 * when neither can be hiding there.
+	 */
+	if (uclamp_is_used() && unlikely(!rq->nr_running) && !rq->rt.rt_nr_running &&
+	    !sched_cfs_bandwidth_used())
 		uclamp_rq_drop_leaked(rq);
 	return dequeue_task_result;
 }

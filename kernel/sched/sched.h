@@ -3569,6 +3569,9 @@ static inline unsigned long cpu_util_rt(struct rq *rq)
 static inline bool update_other_load_avgs(struct rq *rq) { return false; }
 #endif /* CONFIG_SMP */
 
+/* Used by the uclamp leak self-heal in dequeue_task(), defined in fair.c. */
+extern bool sched_cfs_bandwidth_used(void);
+
 #ifdef CONFIG_UCLAMP_TASK
 
 unsigned long uclamp_eff_value(struct task_struct *p, enum uclamp_id clamp_id);

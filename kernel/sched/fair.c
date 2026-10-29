@@ -7022,6 +7022,16 @@ bool cfs_task_bw_constrained(struct task_struct *p)
 #endif
 #endif /* CONFIG_CFS_BANDWIDTH */
 
+/*
+ * ANDROID: throttled tasks keep their uclamp counts while rq->nr_running drops,
+ * so the uclamp leak self-heal in core.c must not run while CFS bandwidth is
+ * in use.
+ */
+bool sched_cfs_bandwidth_used(void)
+{
+	return cfs_bandwidth_used();
+}
+
 #if !defined(CONFIG_CFS_BANDWIDTH) || !defined(CONFIG_NO_HZ_FULL)
 static inline void sched_fair_update_stop_tick(struct rq *rq, struct task_struct *p) {}
 #endif

@@ -31,8 +31,7 @@ static const char lowpan_frags_cache_name[] = "lowpan-frags";
 static struct inet_frags lowpan_frags;
 
 static int lowpan_frag_reasm(struct lowpan_frag_queue *fq, struct sk_buff *skb,
-			     struct sk_buff *prev, struct net_device *ldev,
-			     int *refs);
+			     struct sk_buff *prev,  struct net_device *ldev);
 
 static void lowpan_frag_init(struct inet_frag_queue *q, const void *a)
 {
@@ -46,7 +45,6 @@ static void lowpan_frag_expire(struct timer_list *t)
 {
 	struct inet_frag_queue *frag = from_timer(frag, t, timer);
 	struct frag_queue *fq;
-	int refs = 1;
 
 	fq = container_of(frag, struct frag_queue, q);
 
@@ -55,10 +53,10 @@ static void lowpan_frag_expire(struct timer_list *t)
 	if (fq->q.flags & INET_FRAG_COMPLETE)
 		goto out;
 
-	inet_frag_kill(&fq->q, &refs);
+	inet_frag_kill(&fq->q);
 out:
 	spin_unlock(&fq->q.lock);
-	inet_frag_putn(&fq->q, refs);
+	inet_frag_put(&fq->q);
 }
 
 static inline struct lowpan_frag_queue *
@@ -84,8 +82,7 @@ fq_find(struct net *net, const struct lowpan_802154_cb *cb,
 }
 
 static int lowpan_frag_queue(struct lowpan_frag_queue *fq,
-			     struct sk_buff *skb, u8 frag_type,
-			     int *refs)
+			     struct sk_buff *skb, u8 frag_type)
 {
 	struct sk_buff *prev_tail;
 	struct net_device *ldev;
@@ -146,7 +143,7 @@ static int lowpan_frag_queue(struct lowpan_frag_queue *fq,
 		unsigned long orefdst = skb->_skb_refdst;
 
 		skb->_skb_refdst = 0UL;
-		res = lowpan_frag_reasm(fq, skb, prev_tail, ldev, refs);
+		res = lowpan_frag_reasm(fq, skb, prev_tail, ldev);
 		skb->_skb_refdst = orefdst;
 		return res;
 	}
@@ -165,12 +162,11 @@ err:
  *	the last and the first frames arrived and all the bits are here.
  */
 static int lowpan_frag_reasm(struct lowpan_frag_queue *fq, struct sk_buff *skb,
-			     struct sk_buff *prev_tail, struct net_device *ldev,
-			     int *refs)
+			     struct sk_buff *prev_tail, struct net_device *ldev)
 {
 	void *reasm_data;
 
-	inet_frag_kill(&fq->q, refs);
+	inet_frag_kill(&fq->q);
 
 	reasm_data = inet_frag_reasm_prepare(&fq->q, skb, prev_tail);
 	if (!reasm_data)
@@ -304,20 +300,17 @@ int lowpan_frag_rcv(struct sk_buff *skb, u8 frag_type)
 		goto err;
 	}
 
-	rcu_read_lock();
 	fq = fq_find(net, cb, &hdr.source, &hdr.dest);
 	if (fq != NULL) {
-		int ret, refs = 0;
+		int ret;
 
 		spin_lock(&fq->q.lock);
-		ret = lowpan_frag_queue(fq, skb, frag_type, &refs);
+		ret = lowpan_frag_queue(fq, skb, frag_type);
 		spin_unlock(&fq->q.lock);
 
-		rcu_read_unlock();
-		inet_frag_putn(&fq->q, refs);
+		inet_frag_put(&fq->q);
 		return ret;
 	}
-	rcu_read_unlock();
 
 err:
 	kfree_skb(skb);

@@ -145,7 +145,8 @@ static void inet_frags_free_cb(void *ptr, void *arg)
 	}
 	spin_unlock_bh(&fq->lock);
 
-	inet_frag_putn(fq, count);
+	if (refcount_sub_and_test(count, &fq->refcnt))
+		inet_frag_destroy(fq);
 }
 
 static LLIST_HEAD(fqdir_free_list);
@@ -237,21 +238,22 @@ void fqdir_pre_exit(struct fqdir *fqdir)
 	rhashtable_walk_start(&hti);
 
 	while ((fq = rhashtable_walk_next(&hti))) {
-		int refs = 0;
-
 		if (IS_ERR(fq)) {
 			if (PTR_ERR(fq) != -EAGAIN)
 				break;
 			continue;
 		}
 		spin_lock_bh(&fq->lock);
+		/*
+		 * fqdir->dead is set, so inet_frag_kill() keeps the hash table
+		 * reference (INET_FRAG_HASH_DEAD) and only drops the timer one.
+		 */
 		if (!(fq->flags & INET_FRAG_COMPLETE))
-			inet_frag_kill(fq, &refs);
+			inet_frag_kill(fq);
 
 		if (fq->flags & INET_FRAG_HASH_DEAD)
 			inet_frag_queue_flush(fq, 0);
 		spin_unlock_bh(&fq->lock);
-		inet_frag_putn(fq, refs);
 	}
 
 	rhashtable_walk_stop(&hti);
@@ -266,10 +268,10 @@ void fqdir_exit(struct fqdir *fqdir)
 }
 EXPORT_SYMBOL(fqdir_exit);
 
-void inet_frag_kill(struct inet_frag_queue *fq, int *refs)
+void inet_frag_kill(struct inet_frag_queue *fq)
 {
 	if (del_timer(&fq->timer))
-		(*refs)++;
+		refcount_dec(&fq->refcnt);
 
 	if (!(fq->flags & INET_FRAG_COMPLETE)) {
 		struct fqdir *fqdir = fq->fqdir;
@@ -284,7 +286,7 @@ void inet_frag_kill(struct inet_frag_queue *fq, int *refs)
 		if (!READ_ONCE(fqdir->dead)) {
 			rhashtable_remove_fast(&fqdir->rhashtable, &fq->node,
 					       fqdir->f->rhash_params);
-			(*refs)++;
+			refcount_dec(&fq->refcnt);
 		} else {
 			fq->flags |= INET_FRAG_HASH_DEAD;
 		}
@@ -381,8 +383,7 @@ static struct inet_frag_queue *inet_frag_alloc(struct fqdir *fqdir,
 
 	timer_setup(&q->timer, f->frag_expire, 0);
 	spin_lock_init(&q->lock);
-	/* One reference for the timer, one for the hash table. */
-	refcount_set(&q->refcnt, 2);
+	refcount_set(&q->refcnt, 3);
 
 	return q;
 }
@@ -399,25 +400,20 @@ static struct inet_frag_queue *inet_frag_create(struct fqdir *fqdir,
 		*prev = ERR_PTR(-ENOMEM);
 		return NULL;
 	}
+	mod_timer(&q->timer, jiffies + fqdir->timeout);
 
-	spin_lock_bh(&q->lock);
 	*prev = rhashtable_lookup_get_insert_key(&fqdir->rhashtable, &q->key,
 						 &q->node, f->rhash_params);
 	if (*prev) {
-		/* We could not insert in the hash table,
-		 * we need to cancel what inet_frag_alloc()
-		 * anticipated.
-		 */
 		q->flags |= INET_FRAG_COMPLETE;
-		spin_unlock_bh(&q->lock);
-		inet_frag_putn(q, 2);
+		inet_frag_kill(q);
+		inet_frag_destroy(q);
 		return NULL;
 	}
-	mod_timer(&q->timer, jiffies + fqdir->timeout);
-	spin_unlock_bh(&q->lock);
 	return q;
 }
 
+/* TODO : call from rcu_read_lock() and no longer use refcount_inc_not_zero() */
 struct inet_frag_queue *inet_frag_find(struct fqdir *fqdir, void *key)
 {
 	/* This pairs with WRITE_ONCE() in fqdir_pre_exit(). */
@@ -427,11 +423,17 @@ struct inet_frag_queue *inet_frag_find(struct fqdir *fqdir, void *key)
 	if (!high_thresh || frag_mem_limit(fqdir) > high_thresh)
 		return NULL;
 
+	rcu_read_lock();
+
 	prev = rhashtable_lookup(&fqdir->rhashtable, key, fqdir->f->rhash_params);
 	if (!prev)
 		fq = inet_frag_create(fqdir, key, &prev);
-	if (!IS_ERR_OR_NULL(prev))
+	if (!IS_ERR_OR_NULL(prev)) {
 		fq = prev;
+		if (!refcount_inc_not_zero(&fq->refcnt))
+			fq = NULL;
+	}
+	rcu_read_unlock();
 	return fq;
 }
 EXPORT_SYMBOL(inet_frag_find);

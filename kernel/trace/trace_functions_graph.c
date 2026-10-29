@@ -102,6 +102,7 @@ int __trace_graph_entry(struct trace_array *tr,
 				struct ftrace_graph_ent *trace,
 				unsigned int trace_ctx)
 {
+	struct trace_event_call *call = &event_funcgraph_entry;
 	struct ring_buffer_event *event;
 	struct trace_buffer *buffer = tr->array_buffer.buffer;
 	struct ftrace_graph_ent_entry *entry;
@@ -112,7 +113,8 @@ int __trace_graph_entry(struct trace_array *tr,
 		return 0;
 	entry	= ring_buffer_event_data(event);
 	entry->graph_ent			= *trace;
-	trace_buffer_unlock_commit_nostack(buffer, event);
+	if (!call_filter_check_discard(call, entry, buffer, event))
+		trace_buffer_unlock_commit_nostack(buffer, event);
 
 	return 1;
 }
@@ -221,6 +223,7 @@ void __trace_graph_return(struct trace_array *tr,
 				struct ftrace_graph_ret *trace,
 				unsigned int trace_ctx)
 {
+	struct trace_event_call *call = &event_funcgraph_exit;
 	struct ring_buffer_event *event;
 	struct trace_buffer *buffer = tr->array_buffer.buffer;
 	struct ftrace_graph_ret_entry *entry;
@@ -231,7 +234,8 @@ void __trace_graph_return(struct trace_array *tr,
 		return;
 	entry	= ring_buffer_event_data(event);
 	entry->ret				= *trace;
-	trace_buffer_unlock_commit_nostack(buffer, event);
+	if (!call_filter_check_discard(call, entry, buffer, event))
+		trace_buffer_unlock_commit_nostack(buffer, event);
 }
 
 void trace_graph_return(struct ftrace_graph_ret *trace,

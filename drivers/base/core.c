@@ -263,7 +263,7 @@ void fw_devlink_refresh_fwnode(struct fwnode_handle *fwnode)
 	 */
 	fwnode_handle_get(fwnode);
 	do {
-		if (fwnode_test_flag(fwnode, FWNODE_FLAG_NOT_DEVICE))
+		if (fwnode->flags & FWNODE_FLAG_NOT_DEVICE)
 			continue;
 
 		dev = get_dev_from_fwnode(fwnode);

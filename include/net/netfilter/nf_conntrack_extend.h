@@ -38,6 +38,7 @@ enum nf_ct_ext_id {
 struct nf_ct_ext {
 	u8 offset[NF_CT_EXT_NUM];
 	u8 len;
+	unsigned int gen_id;	/* ANDROID: KABI: unused since 6.12.97, always 0 */
 	char data[] __aligned(8);
 };
 
@@ -50,6 +51,9 @@ static inline bool nf_ct_ext_exist(const struct nf_conn *ct, u8 id)
 {
 	return (ct->ext && __nf_ct_ext_exist(ct->ext, id));
 }
+
+/* ANDROID: KABI: kept for modules built against the header with ct extension genids. */
+void *__nf_ct_ext_find(const struct nf_ct_ext *ext, u8 id);
 
 static inline void *nf_ct_ext_find(const struct nf_conn *ct, u8 id)
 {

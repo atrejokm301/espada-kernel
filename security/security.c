@@ -19,6 +19,7 @@
 #include <linux/kernel.h>
 #include <linux/kernel_read_file.h>
 #include <linux/lsm_hooks.h>
+#include <linux/fsnotify.h>	/* ANDROID: KABI, see android_kabi_fsnotify_open_perm() */
 #include <linux/mman.h>
 #include <linux/mount.h>
 #include <linux/personality.h>
@@ -5975,4 +5976,16 @@ int security_uring_cmd(struct io_uring_cmd *ioucmd)
 void security_initramfs_populated(void)
 {
 	call_void_hook(initramfs_populated);
+}
+
+/*
+ * ANDROID: KABI: never called. 6.12.105 b7212a0cc80a moved fsnotify_open_perm()
+ * from security_file_open() to do_dentry_open(). Inlining it here keeps the
+ * fsnotify types in this object's debug info, which the exports of this file
+ * (security_sk_clone(), security_sock_graft(), the binder hooks, ...) were
+ * versioned with. Checked: every export of this object gets its v1.5 CRC back.
+ */
+static int __used android_kabi_fsnotify_open_perm(struct file *file)
+{
+	return fsnotify_open_perm(file);
 }

@@ -244,7 +244,7 @@ void drm_client_dev_hotplug(struct drm_device *dev)
 }
 EXPORT_SYMBOL(drm_client_dev_hotplug);
 
-void drm_client_dev_restore(struct drm_device *dev, bool force)
+void drm_client_dev_restore(struct drm_device *dev)
 {
 	struct drm_client_dev *client;
 	int ret;
@@ -257,7 +257,7 @@ void drm_client_dev_restore(struct drm_device *dev, bool force)
 		if (!client->funcs || !client->funcs->restore)
 			continue;
 
-		ret = client->funcs->restore(client, force);
+		ret = client->funcs->restore(client);
 		drm_dbg_kms(dev, "%s: ret=%d\n", client->name, ret);
 		if (!ret) /* The first one to return zero gets the privilege to restore */
 			break;

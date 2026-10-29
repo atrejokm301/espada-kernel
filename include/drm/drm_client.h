@@ -47,14 +47,12 @@ struct drm_client_funcs {
 	 *
 	 * Note that the core does not guarantee exclusion against concurrent
 	 * drm_open(). Clients need to ensure this themselves, for example by
-	 * using drm_master_internal_acquire() and drm_master_internal_release().
-	 *
-	 * If the caller passes force, the client should ignore any present DRM
-	 * master and restore the display anyway.
+	 * using drm_master_internal_acquire() and
+	 * drm_master_internal_release().
 	 *
 	 * This callback is optional.
 	 */
-	int (*restore)(struct drm_client_dev *client, bool force);
+	int (*restore)(struct drm_client_dev *client);
 
 	/**
 	 * @hotplug:
@@ -125,7 +123,7 @@ void drm_client_register(struct drm_client_dev *client);
 
 void drm_client_dev_unregister(struct drm_device *dev);
 void drm_client_dev_hotplug(struct drm_device *dev);
-void drm_client_dev_restore(struct drm_device *dev, bool force);
+void drm_client_dev_restore(struct drm_device *dev);
 
 /**
  * struct drm_client_buffer - DRM client buffer

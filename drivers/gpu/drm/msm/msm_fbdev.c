@@ -173,9 +173,9 @@ static void msm_fbdev_client_unregister(struct drm_client_dev *client)
 	}
 }
 
-static int msm_fbdev_client_restore(struct drm_client_dev *client, bool force)
+static int msm_fbdev_client_restore(struct drm_client_dev *client)
 {
-	drm_fb_helper_restore_fbdev_mode_unlocked(client->dev->fb_helper, force);
+	drm_fb_helper_lastclose(client->dev);
 
 	return 0;
 }

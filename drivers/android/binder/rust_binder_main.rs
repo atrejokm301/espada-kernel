@@ -107,7 +107,12 @@ const RUST_BINDER_LAYOUT: rust_binder_layout = rust_binder_layout {
 fn next_debug_id() -> usize {
     static NEXT_DEBUG_ID: AtomicUsize = AtomicUsize::new(0);
 
-    NEXT_DEBUG_ID.fetch_add(1, Ordering::Relaxed)
+    loop {
+        let id = NEXT_DEBUG_ID.fetch_add(1, Ordering::Relaxed);
+        if id != 0 {
+            return id;
+        }
+    }
 }
 
 /// Provides a single place to write Binder return values via the
@@ -171,7 +176,9 @@ trait DeliverToRead: ListArcSafe + Send + Sync {
     /// Generally only set to true for non-oneway transactions.
     fn should_sync_wakeup(&self) -> bool;
 
-    fn debug_print(&self, m: &SeqFile, prefix: &str, transaction_prefix: &str) -> Result<()>;
+    /// Prints this work item for the binder_logs files, hashing userspace pointers like `%p` when
+    /// `hashed` is set.
+    fn debug_print(&self, m: &SeqFile, prefix: &str, tprefix: &str, hashed: bool) -> Result;
 }
 
 // Wrapper around a `DeliverToRead` with linked list links.
@@ -291,7 +298,7 @@ impl DeliverToRead for DeliverCode {
         false
     }
 
-    fn debug_print(&self, m: &SeqFile, prefix: &str, _tprefix: &str) -> Result<()> {
+    fn debug_print(&self, m: &SeqFile, prefix: &str, _tprefix: &str, _hashed: bool) -> Result {
         seq_print!(m, "{}", prefix);
         if self.skip.load(Ordering::Relaxed) {
             seq_print!(m, "(skipped) ");
@@ -350,6 +357,9 @@ impl kernel::Module for BinderModule {
         }
 
         pr_warn!("Loaded Rust Binder.");
+
+        crate::transaction::TRANSACTION_LOG.init()?;
+        crate::transaction::FAILED_TRANSACTION_LOG.init()?;
 
         let netlink = crate::netlink::BINDER_NL_FAMILY.register()?;
         BINDER_SHRINKER.register(kernel::c_str!("android-binder"))?;
@@ -557,7 +567,23 @@ unsafe extern "C" fn rust_binder_state_show(
     // SAFETY: The caller ensures that the pointer is valid and exclusive for the duration in which
     // this method is called.
     let m = unsafe { SeqFile::from_raw(ptr) };
-    if let Err(err) = rust_binder_state_show_impl(m) {
+    if let Err(err) = rust_binder_state_show_impl(m, false) {
+        seq_print!(m, "failed to generate state: {:?}\n", err);
+    }
+    0
+}
+
+/// # Safety
+/// Only called by binderfs.
+#[no_mangle]
+unsafe extern "C" fn rust_binder_state_hashed_show(
+    ptr: *mut seq_file,
+    _: *mut kernel::ffi::c_void,
+) -> kernel::ffi::c_int {
+    // SAFETY: The caller ensures that the pointer is valid and exclusive for the duration in which
+    // this method is called.
+    let m = unsafe { SeqFile::from_raw(ptr) };
+    if let Err(err) = rust_binder_state_show_impl(m, true) {
         seq_print!(m, "failed to generate state: {:?}\n", err);
     }
     0
@@ -591,19 +617,56 @@ unsafe extern "C" fn rust_binder_transactions_show(
     // SAFETY: The caller ensures that the pointer is valid and exclusive for the duration in which
     // this method is called.
     let m = unsafe { SeqFile::from_raw(ptr) };
-    if let Err(err) = rust_binder_transactions_show_impl(m) {
+    if let Err(err) = rust_binder_transactions_show_impl(m, false) {
         seq_print!(m, "failed to generate state: {:?}\n", err);
     }
     0
 }
 
-fn rust_binder_transactions_show_impl(m: &SeqFile) -> Result<()> {
+/// # Safety
+/// Only called by binderfs.
+#[no_mangle]
+unsafe extern "C" fn rust_binder_transactions_hashed_show(
+    ptr: *mut seq_file,
+    _: *mut kernel::ffi::c_void,
+) -> kernel::ffi::c_int {
+    // SAFETY: The caller ensures that the pointer is valid and exclusive for the duration in which
+    // this method is called.
+    let m = unsafe { SeqFile::from_raw(ptr) };
+    if let Err(err) = rust_binder_transactions_show_impl(m, true) {
+        seq_print!(m, "failed to generate state: {:?}\n", err);
+    }
+    0
+}
+
+/// # Safety
+/// Only called by binderfs.
+#[no_mangle]
+unsafe extern "C" fn rust_binder_transaction_log_show(
+    ptr: *mut seq_file,
+    _: *mut kernel::ffi::c_void,
+) -> kernel::ffi::c_int {
+    // SAFETY: Accessing the private field of `seq_file` is okay.
+    let is_failed = !unsafe { (*ptr).private }.is_null();
+    // SAFETY: The caller ensures that the pointer is valid and exclusive for the duration in which
+    // this method is called.
+    let m = unsafe { SeqFile::from_raw(ptr) };
+    let log = if is_failed {
+        &transaction::FAILED_TRANSACTION_LOG
+    } else {
+        &transaction::TRANSACTION_LOG
+    };
+    log.debug_print(m);
+    0
+}
+
+fn rust_binder_transactions_show_impl(m: &SeqFile, hashed: bool) -> Result {
     seq_print!(m, "binder transactions:\n");
     let contexts = context::get_all_contexts()?;
     for ctx in contexts {
         let procs = ctx.get_all_procs()?;
         for proc in procs {
-            proc.debug_print(m, &ctx, false)?;
+            proc.debug_print(m, &ctx, false, hashed)?;
             seq_print!(m, "\n");
         }
     }
@@ -624,13 +687,13 @@ fn rust_binder_stats_show_impl(m: &SeqFile) -> Result<()> {
     Ok(())
 }
 
-fn rust_binder_state_show_impl(m: &SeqFile) -> Result<()> {
+fn rust_binder_state_show_impl(m: &SeqFile, hashed: bool) -> Result {
     seq_print!(m, "binder state:\n");
     let contexts = context::get_all_contexts()?;
     for ctx in contexts {
         let procs = ctx.get_all_procs()?;
         for proc in procs {
-            proc.debug_print(m, &ctx, true)?;
+            proc.debug_print(m, &ctx, true, hashed)?;
             seq_print!(m, "\n");
         }
     }
@@ -643,7 +706,7 @@ fn rust_binder_proc_show_impl(m: &SeqFile, pid: Pid) -> Result<()> {
     for ctx in contexts {
         let procs = ctx.get_procs_with_pid(pid)?;
         for proc in procs {
-            proc.debug_print(m, &ctx, true)?;
+            proc.debug_print(m, &ctx, true, false)?;
             seq_print!(m, "\n");
         }
     }

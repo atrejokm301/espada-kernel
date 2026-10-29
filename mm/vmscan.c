@@ -352,6 +352,13 @@ static inline bool can_reclaim_anon_pages(struct mem_cgroup *memcg,
 					  int nid,
 					  struct scan_control *sc)
 {
+	if (sc) {
+		bool skip = false;
+		trace_android_vh_can_reclaim_anon_pages(memcg, nid, sc->gfp_mask, &skip);
+		if (skip)
+			goto can_demote;
+	}
+
 	if (memcg == NULL) {
 		/*
 		 * For non-memcg reclaim, is there
@@ -370,6 +377,7 @@ static inline bool can_reclaim_anon_pages(struct mem_cgroup *memcg,
 	 *
 	 * Can it be reclaimed from this node via demotion?
 	 */
+can_demote:
 	return can_demote(nid, sc);
 }
 
@@ -956,6 +964,12 @@ static enum folio_references folio_check_references(struct folio *folio,
 		return FOLIOREF_KEEP;
 
 	if (lru_gen_enabled()) {
+#ifdef CONFIG_64BIT
+		if (test_and_clear_bit(PG_oem_reserved_5, folio_flags(folio, 0))) {
+			folio_set_workingset(folio);
+			return FOLIOREF_ACTIVATE;
+		}
+#endif
 		if (!referenced_ptes)
 			return FOLIOREF_RECLAIM;
 
@@ -4045,6 +4059,7 @@ static bool inc_min_seq(struct lruvec *lruvec, int type, int swappiness)
 {
 	int zone;
 	int remaining = MAX_LRU_BATCH;
+	bool stop = false;
 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
 	int hist = lru_hist_from_seq(lrugen->min_seq[type]);
 	int new_gen, old_gen = lru_gen_from_seq(lrugen->min_seq[type]);
@@ -4083,7 +4098,9 @@ static bool inc_min_seq(struct lruvec *lruvec, int type, int swappiness)
 					   lrugen->protected[hist][type][tier] + delta);
 			}
 
-			if (!--remaining)
+			trace_android_vh_mglru_inc_min_seq(lruvec, type, swappiness,
+						      remaining, &stop);
+			if (!--remaining || stop)
 				return false;
 		}
 	}
@@ -4098,6 +4115,7 @@ static bool try_to_inc_min_seq(struct lruvec *lruvec, int swappiness)
 {
 	int gen, type, zone;
 	bool success = false;
+	bool skip = false;
 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
 	DEFINE_MIN_SEQ(lruvec);
 
@@ -4119,8 +4137,10 @@ next:
 		;
 	}
 
+	trace_android_vh_mglru_skip_min_seq_balance(lruvec, swappiness, &skip);
+
 	/* see the comment on lru_gen_folio */
-	if (swappiness && swappiness <= MAX_SWAPPINESS) {
+	if (!skip && swappiness && swappiness <= MAX_SWAPPINESS) {
 		unsigned long seq = lrugen->max_seq - MIN_NR_GENS;
 
 		if (min_seq[LRU_GEN_ANON] > seq && min_seq[LRU_GEN_FILE] < seq)
@@ -4734,12 +4754,19 @@ static int scan_folios(struct lruvec *lruvec, struct scan_control *sc,
 	int isolated = 0;
 	int skipped = 0;
 	int remaining = MAX_LRU_BATCH;
+	bool force_scan = false;
+	bool skip_scan = false;
+	int swappiness = get_swappiness(lruvec, sc);
 	struct lru_gen_folio *lrugen = &lruvec->lrugen;
 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
 
 	VM_WARN_ON_ONCE(!list_empty(list));
 
-	if (get_nr_gens(lruvec, type) == MIN_NR_GENS)
+	trace_android_vh_mglru_scan_folios(lruvec, sc->priority, type, swappiness,
+					   &force_scan, &skip_scan);
+	if (skip_scan)
+		return 0;
+	if (!force_scan && get_nr_gens(lruvec, type) == MIN_NR_GENS)
 		return 0;
 
 	gen = lru_gen_from_seq(lrugen->min_seq[type]);
@@ -5002,6 +5029,7 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc, int s
 	DEFINE_MAX_SEQ(lruvec);
 	bool bypass = false;
 	bool young = false;
+	bool force_aging = false;
 
 	/*
 	 * Proactive reclaim initiated by userspace for anonymous memory only.
@@ -5020,14 +5048,21 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc, int s
 		return -1;
 
 	success = should_run_aging(lruvec, max_seq, swappiness, &nr_to_scan);
-
-	/* try to scrape all its memory if this memcg was deleted */
-	if (nr_to_scan && !mem_cgroup_online(memcg))
-		return nr_to_scan;
+	if (!success) {
+		trace_android_vh_mglru_should_run_aging(lruvec, sc->priority, swappiness,
+							  &force_aging);
+		success |= force_aging;
+	}
 
 	/* try to get away with not aging at the default priority */
-	if (!success || sc->priority == DEF_PRIORITY)
-		return nr_to_scan >> sc->priority;
+	if (!success || sc->priority == DEF_PRIORITY) {
+		unsigned long scan = nr_to_scan >> sc->priority;
+
+		/* scrape out the remaining pages of a deleted memcg */
+		if (!scan && !mem_cgroup_online(memcg))
+			scan = min(nr_to_scan, SWAP_CLUSTER_MAX);
+		return scan;
+	}
 
 	trace_android_vh_mglru_aging_bypass(lruvec, max_seq,
 		swappiness, &bypass, &young);
@@ -5160,7 +5195,7 @@ static int shrink_one(struct lruvec *lruvec, struct scan_control *sc)
 	if (success && mem_cgroup_online(memcg))
 		return MEMCG_LRU_YOUNG;
 
-	if (!success && lruvec_is_sizable(lruvec, sc))
+	if (!success && mem_cgroup_online(memcg) && lruvec_is_sizable(lruvec, sc))
 		return 0;
 
 	/* one retry if offlined or too small */
@@ -5264,6 +5299,18 @@ static void lru_gen_shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc
 	blk_finish_plug(&plug);
 }
 
+#ifdef CONFIG_MEMCG
+static unsigned long shrink_root_memcg_slab(gfp_t gfp_mask, int nid, int priority)
+{
+	return shrink_slab(gfp_mask, nid, root_mem_cgroup, priority);
+}
+#else
+static unsigned long shrink_root_memcg_slab(gfp_t gfp_mask, int nid, int priority)
+{
+	return 0;
+}
+#endif
+
 static void lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *sc)
 {
 	struct blk_plug plug;
@@ -5290,11 +5337,13 @@ static void lru_gen_shrink_node(struct pglist_data *pgdat, struct scan_control *
 	if (current_is_kswapd())
 		sc->nr_reclaimed = 0;
 
-	if (mem_cgroup_disabled())
+	if (mem_cgroup_disabled()) {
 		shrink_one(&pgdat->__lruvec, sc);
-	else
-		shrink_many(pgdat, sc);
-
+	} else {
+		shrink_root_memcg_slab(sc->gfp_mask, pgdat->node_id, sc->priority);
+		if (sc->nr_reclaimed < sc->nr_to_reclaim)
+			shrink_many(pgdat, sc);
+	}
 	if (current_is_kswapd())
 		sc->nr_reclaimed += reclaimed;
 
@@ -6012,6 +6061,7 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 	struct blk_plug plug;
 	bool bypass = false;
 	bool shrink_bypass = false;
+	bool reclaim_target_exit = false;
 
 	if (lru_gen_enabled() && !root_reclaim(sc)) {
 		lru_gen_shrink_lruvec(lruvec, sc);
@@ -6064,6 +6114,12 @@ static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
 		}
 
 		cond_resched_tasks_rcu_qs();
+
+		trace_android_vh_reclaim_target_lruvec_exit(cgroup_reclaim(sc),
+					sc->nr_reclaimed, nr_reclaimed,
+					sc->nr_to_reclaim, &reclaim_target_exit);
+		if (reclaim_target_exit)
+			break;
 
 		if (nr_reclaimed < nr_to_reclaim || proportional_reclaim)
 			continue;
@@ -6241,6 +6297,7 @@ static void shrink_node_memcgs(pg_data_t *pgdat, struct scan_control *sc)
 		unsigned long scanned;
 		bool bypass = false;
 		bool skip = false;
+		bool skip_current_prio = false;
 
 		/*
 		 * This loop can become CPU-bound when target memcgs
@@ -6279,7 +6336,11 @@ static void shrink_node_memcgs(pg_data_t *pgdat, struct scan_control *sc)
 		reclaimed = sc->nr_reclaimed;
 		scanned = sc->nr_scanned;
 
-		shrink_lruvec(lruvec, sc);
+		trace_android_vh_scan_page_skip_current_prio(cgroup_reclaim(sc),
+				sc->priority, lruvec, sc->reclaim_idx,
+				&skip_current_prio);
+		if (!skip_current_prio)
+			shrink_lruvec(lruvec, sc);
 
 		shrink_slab(sc->gfp_mask, pgdat->node_id, memcg,
 			    sc->priority);

@@ -1789,13 +1789,6 @@ union bpf_attr {
 				};
 				__u64		expected_revision;
 			} netkit;
-			struct {
-				union {
-					__u32	relative_fd;
-					__u32	relative_id;
-				};
-				__u64		expected_revision;
-			} cgroup;
 		};
 	} link_create;
 

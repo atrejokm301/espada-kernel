@@ -10,6 +10,7 @@
 #ifndef _LINUX_IGMP_H
 #define _LINUX_IGMP_H
 
+#include <linux/android_kabi.h>
 #include <linux/skbuff.h>
 #include <linux/timer.h>
 #include <linux/in.h>
@@ -57,20 +58,22 @@ struct ip_mc_socklist {
 };
 
 struct ip_sf_list {
-	struct ip_sf_list	*sf_next;
+	struct ip_sf_list __rcu	*sf_next;
 	unsigned long		sf_count[2];	/* include/exclude counts */
 	__be32			sf_inaddr;
 	unsigned char		sf_gsresp;	/* include in g & s response? */
 	unsigned char		sf_oldin;	/* change state */
 	unsigned char		sf_crcount;	/* retrans. left to send */
+	/* ANDROID: KABI: added by 6.12.111 f5182dfad542, built-in igmp.c only */
+	ANDROID_KABI_IGNORE(0, struct rcu_head rcu);
 };
 
 struct ip_mc_list {
 	struct in_device	*interface;
 	__be32			multiaddr;
 	unsigned int		sfmode;
-	struct ip_sf_list	*sources;
-	struct ip_sf_list	*tomb;
+	struct ip_sf_list __rcu	*sources;
+	struct ip_sf_list __rcu	*tomb;
 	unsigned long		sfcount[2];
 	union {
 		struct ip_mc_list *next;

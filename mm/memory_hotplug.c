@@ -2389,7 +2389,7 @@ int remove_memory_subsection(u64 start, u64 size)
 		return -EBUSY;
 	}
 
-	arch_remove_memory(start, size, NULL);
+	arch_remove_memory(start, size, NULL, NULL);
 
 	if (IS_ENABLED(CONFIG_ARCH_KEEP_MEMBLOCK))
 		memblock_remove(start, size);

@@ -392,6 +392,18 @@ int __fsverity_file_open(struct inode *inode, struct file *filp)
 }
 EXPORT_SYMBOL_GPL(__fsverity_file_open);
 
+/*
+ * ANDROID: KABI: setattr_prepare() does this check since 6.12.113 (cc99c58f735b)
+ * and no in-tree caller is left, but the export stays for modules.
+ */
+int __fsverity_prepare_setattr(struct dentry *dentry, struct iattr *attr)
+{
+	if (attr->ia_valid & ATTR_SIZE)
+		return -EPERM;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(__fsverity_prepare_setattr);
+
 void __fsverity_cleanup_inode(struct inode *inode)
 {
 	fsverity_free_info(inode->i_verity_info);

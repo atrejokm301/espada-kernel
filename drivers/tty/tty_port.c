@@ -360,11 +360,12 @@ EXPORT_SYMBOL(tty_port_tty_set);
  * functioning). It lowers DTR/RTS (if @tty has HUPCL set) and invokes
  * @port->ops->shutdown().
  */
-static void tty_port_shutdown(struct tty_port *port, struct tty_struct *tty)
+static void tty_port_shutdown_locked(struct tty_port *port, struct tty_struct *tty)
 {
-	mutex_lock(&port->mutex);
+	lockdep_assert_held(&port->mutex);
+
 	if (port->console)
-		goto out;
+		return;
 
 	if (tty_port_initialized(port)) {
 		tty_port_set_initialized(port, false);
@@ -378,7 +379,12 @@ static void tty_port_shutdown(struct tty_port *port, struct tty_struct *tty)
 		if (port->ops->shutdown)
 			port->ops->shutdown(port);
 	}
-out:
+}
+
+static void tty_port_shutdown(struct tty_port *port, struct tty_struct *tty)
+{
+	mutex_lock(&port->mutex);
+	tty_port_shutdown_locked(port, tty);
 	mutex_unlock(&port->mutex);
 }
 
@@ -396,6 +402,7 @@ void tty_port_hangup(struct tty_port *port)
 	struct tty_struct *tty;
 	unsigned long flags;
 
+	mutex_lock(&port->mutex);
 	spin_lock_irqsave(&port->lock, flags);
 	port->count = 0;
 	tty = port->tty;
@@ -404,7 +411,8 @@ void tty_port_hangup(struct tty_port *port)
 	port->tty = NULL;
 	spin_unlock_irqrestore(&port->lock, flags);
 	tty_port_set_active(port, false);
-	tty_port_shutdown(port, tty);
+	tty_port_shutdown_locked(port, tty);
+	mutex_unlock(&port->mutex);
 	tty_kref_put(tty);
 	wake_up_interruptible(&port->open_wait);
 	wake_up_interruptible(&port->delta_msr_wait);
@@ -413,7 +421,17 @@ EXPORT_SYMBOL(tty_port_hangup);
 
 void __tty_port_tty_hangup(struct tty_port *port, bool check_clocal, bool async)
 {
-	struct tty_struct *tty = tty_port_tty_get(port);
+	struct tty_struct *tty;
+
+	/*
+	 * A synchronous hangup must not return before a racing hangup has
+	 * shut the port down, so serialise against tty_port_hangup().
+	 */
+	if (!async)
+		mutex_lock(&port->mutex);
+	tty = tty_port_tty_get(port);
+	if (!async)
+		mutex_unlock(&port->mutex);
 
 	if (tty && (!check_clocal || !C_CLOCAL(tty))) {
 		if (async)
@@ -794,6 +812,7 @@ int tty_port_open(struct tty_port *port, struct tty_struct *tty,
 			int retval = port->ops->activate(port, tty);
 
 			if (retval) {
+				set_bit(TTY_IO_ERROR, &tty->flags);
 				mutex_unlock(&port->mutex);
 				return retval;
 			}

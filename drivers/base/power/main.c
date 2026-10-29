@@ -1939,7 +1939,6 @@ unlock:
 
 	if (ret < 0) {
 		suspend_report_result(dev, callback, ret);
-		pm_runtime_unblock(dev);
 		pm_runtime_put(dev);
 		return ret;
 	}

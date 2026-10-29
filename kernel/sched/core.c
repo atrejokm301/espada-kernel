@@ -1875,6 +1875,41 @@ static inline void uclamp_rq_dec(struct rq *rq, struct task_struct *p)
 		uclamp_rq_dec_id(rq, p, clamp_id);
 }
 
+/*
+ * ANDROID: an empty runqueue cannot have tasks in its uclamp buckets, but on
+ * grizzly a count is sometimes left behind (seen: cpu1 UCLAMP_MIN bucket 11,
+ * value 610, tasks 1, for hours, with no task carrying that clamp). That keeps
+ * the CPU's frequency request near max for the rest of the uptime, and pins
+ * its whole cpufreq policy with it. Drop such counts once the runqueue is
+ * empty and say once where it happened, so the leak can be traced.
+ */
+static void uclamp_rq_drop_leaked(struct rq *rq)
+{
+	enum uclamp_id clamp_id;
+
+	lockdep_assert_rq_held(rq);
+
+	for_each_clamp_id(clamp_id) {
+		struct uclamp_rq *uc_rq = &rq->uclamp[clamp_id];
+		bool leaked = false;
+		int b;
+
+		for (b = 0; b < UCLAMP_BUCKETS; b++) {
+			if (likely(!uc_rq->bucket[b].tasks))
+				continue;
+			pr_warn_once("uclamp: CPU%d %s bucket %d (value %u) kept %lu task(s) on an empty runqueue, dropped\n",
+				     cpu_of(rq), clamp_id == UCLAMP_MIN ? "min" : "max", b,
+				     (unsigned int)uc_rq->bucket[b].value,
+				     (unsigned long)uc_rq->bucket[b].tasks);
+			uc_rq->bucket[b].tasks = 0;
+			leaked = true;
+		}
+		if (unlikely(leaked))
+			WRITE_ONCE(uc_rq->value,
+				   uclamp_rq_max_value(rq, clamp_id, READ_ONCE(uc_rq->value)));
+	}
+}
+
 static inline void uclamp_rq_reinc_id(struct rq *rq, struct task_struct *p,
 				      enum uclamp_id clamp_id)
 {
@@ -2111,6 +2146,7 @@ static void __init init_uclamp(void)
 #else /* !CONFIG_UCLAMP_TASK */
 static inline void uclamp_rq_inc(struct rq *rq, struct task_struct *p, int flags) { }
 static inline void uclamp_rq_dec(struct rq *rq, struct task_struct *p) { }
+static inline void uclamp_rq_drop_leaked(struct rq *rq) { }
 static inline void uclamp_fork(struct task_struct *p) { }
 static inline void uclamp_post_fork(struct task_struct *p) { }
 static inline void init_uclamp(void) { }
@@ -2190,6 +2226,8 @@ inline bool dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 	trace_android_rvh_dequeue_task(rq, p, flags);
 	dequeue_task_result = p->sched_class->dequeue_task(rq, p, flags);
 	trace_android_rvh_after_dequeue_task(rq, p, flags, &dequeue_task_result);
+	if (uclamp_is_used() && unlikely(!rq->nr_running))
+		uclamp_rq_drop_leaked(rq);
 	return dequeue_task_result;
 }
 

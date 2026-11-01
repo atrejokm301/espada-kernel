@@ -423,9 +423,6 @@ struct io_ring_ctx {
 	u32				iowq_limits[2];
 
 	struct callback_head		poll_wq_task_work;
-	/* deferred ->poll_wq wake up for local task_work */
-	struct rcu_head			poll_wq_rcu;
-	atomic_t			poll_wq_rcu_pending;
 	struct list_head		defer_list;
 
 	struct io_alloc_cache		msg_cache;
@@ -454,6 +451,14 @@ struct io_ring_ctx {
 	unsigned short			n_sqe_pages;
 	struct page			**ring_pages;
 	struct page			**sqe_pages;
+
+	/*
+	 * ANDROID: KABI: added by 6.12.115 d8c618747a6a (deferred ->poll_wq
+	 * wake up for local task_work). Kept in the tail padding so no member
+	 * offset or the struct size changes.
+	 */
+	ANDROID_KABI_IGNORE(9, struct rcu_head poll_wq_rcu);
+	ANDROID_KABI_IGNORE(10, atomic_t poll_wq_rcu_pending);
 };
 
 struct io_tw_state {

@@ -951,9 +951,6 @@ struct mm_struct {
 		 */
 		seqcount_t mm_lock_seq;
 #endif
-#ifdef CONFIG_FUTEX
-		atomic64_t futex_unique_id;
-#endif
 
 
 		unsigned long hiwater_rss; /* High-watermark of RSS usage */
@@ -1089,6 +1086,13 @@ struct mm_struct {
 #endif /* CONFIG_LRU_GEN_WALKS_MMU */
 
 		ANDROID_KABI_USE(1, struct task_dma_buf_info *dmabuf_info);
+#ifdef CONFIG_FUTEX
+		/*
+		 * ANDROID: KABI: added by 6.12.115 16cc0fee39df. Kept in the tail
+		 * padding so no member offset or the struct size changes.
+		 */
+		ANDROID_KABI_IGNORE(1, atomic64_t futex_unique_id);
+#endif
 	} __randomize_layout;
 
 	/*

@@ -1935,6 +1935,11 @@ static int elf_validity_cache_secstrings(struct load_info *info)
 
 	strhdr = &info->sechdrs[info->hdr->e_shstrndx];
 
+	if (strhdr->sh_type != SHT_STRTAB) {
+		pr_err("Invalid ELF section name table type: %u\n", strhdr->sh_type);
+		return -ENOEXEC;
+	}
+
 	/*
 	 * The section name table must be NUL-terminated, as required
 	 * by the spec. This makes strcmp and pr_* calls that access
@@ -2112,6 +2117,12 @@ static int elf_validity_cache_index_str(struct load_info *info)
 	if (str_idx == SHN_UNDEF || str_idx >= info->hdr->e_shnum) {
 		pr_err("Invalid ELF sh_link!=SHN_UNDEF(%d) or (sh_link(%d) >= hdr->e_shnum(%d)\n",
 		       str_idx, str_idx, info->hdr->e_shnum);
+		return -ENOEXEC;
+	}
+
+	if (info->sechdrs[str_idx].sh_type != SHT_STRTAB) {
+		pr_err("Invalid ELF symbol string table type: %u\n",
+		       info->sechdrs[str_idx].sh_type);
 		return -ENOEXEC;
 	}
 

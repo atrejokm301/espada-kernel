@@ -15,6 +15,7 @@
 #include <linux/cpumask_types.h>
 #include <linux/workqueue.h>
 #include <linux/jump_label.h>
+#include <linux/android_kabi.h>
 
 #include <linux/atomic.h>
 #include <asm/ptrace.h>
@@ -134,7 +135,12 @@ struct irqaction {
 	unsigned long		thread_mask;
 	const char		*name;
 	struct proc_dir_entry	*dir;
-	struct callback_head	thread_dtor;
+	/*
+	 * ANDROID: KABI: added by 6.12.117 18d9bba2ae29. Kept in the tail
+	 * padding (the members end at 0x60, the struct is 0x80) so no member
+	 * offset or the size changes.
+	 */
+	ANDROID_KABI_IGNORE(1, struct callback_head thread_dtor);
 } ____cacheline_internodealigned_in_smp;
 
 extern irqreturn_t no_action(int cpl, void *dev_id);

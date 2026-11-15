@@ -2,8 +2,9 @@
 
 A kernel for the Pixel 11 family (Google "spacecraft": cubs, grizzly, kodiak and the `_2`
 variants). It starts from Google's Pixel 11 kernel source and sits on Google's
-android16-6.12-lts branch (Linux 6.12.96 since v3.5). The vendor modules in the zips come
-from Google's October 2026 source drop (CD1A.261005.003). Tested on the Pixel 11 Pro (grizzly).
+android16-6.12-lts branch, with the linux-stable releases merged on top (Linux 6.12.117 since
+v4). The vendor modules in the zips come from Google's November 2026 source drop
+(CP4A.261105.040.D1). Tested on the Pixel 11 Pro (grizzly).
 
 Branch `espada` is the kernel with KernelSU-Next and SuSFS built in. Branch `espada-magisk`
 is the same kernel without them. Flashable zips are on the releases page and in the XDA thread.
@@ -17,7 +18,9 @@ is the same kernel without them. Flashable zips are on the releases page and in 
 - Prime core capped at 3571 MHz (see the XDA post for the measurements) and its DVFS
   headroom clamped so it stops spiking to max on every wakeup
 - GPU devfreq polling floored at 40 ms
-- android16-6.12-lts 6.12.96 base plus fixes picked from newer 6.12 stable and mainline
+- android16-6.12-lts base with linux-stable merged up to 6.12.117, plus fixes picked from
+  mainline (7.x) and 6.18
+- 16 ms PELT half-life instead of 32 ms (asdfmonster261's patch)
 - Per-app uname spoof (octobot): Play Integrity, Messages and Wallet see the stock
   kernel version, everything else sees the real one
 - USB OTG in recovery (asdfmonster261's tcpm patch)

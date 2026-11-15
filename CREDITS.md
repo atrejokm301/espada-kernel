@@ -9,9 +9,10 @@ Espada Kernel for the Pixel 11 family (spacecraft) is built on the work of other
 - **The Android common kernel (ACK) and upstream Linux developers** — the android16-6.12
   base and the cherry-picked upstream fixes, which keep their original authors.
 - **Google** — the Pixel 11 GPL kernel source drop (CD1A.260714.001.A9) this tree starts from,
-  and the October 2026 drop (CD1A.261005.003) the vendor modules are built from now.
+  and the November 2026 drop (CP4A.261105.040.D1) the vendor modules are built from now.
 - **Adam W. Willis (octobot)** - the per-app uname spoof.
-- **asdfmonster261** - the tcpm patch that brings USB OTG back in recovery.
+- **asdfmonster261** - the tcpm patch that brings USB OTG back in recovery, and the 16 ms
+  PELT half-life patch.
 - **The KernelSU-Next and SuSFS projects** - the root driver and SuSFS on the `espada` branch.
 
 Espada-specific changes (grizzly tuning of CASS, the 6.12/MGLRU port of Simple LMK,

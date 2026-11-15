@@ -517,11 +517,31 @@ bool update_other_load_avgs(struct rq *rq)
 		update_irq_load_avg(rq, 0);
 }
 
-__read_mostly unsigned int sched_pelt_lshift;
+__read_mostly unsigned int sched_pelt_lshift = 1; /* seed: matches the 2x multiplier default */
 
 #ifdef CONFIG_SYSCTL
 #include <trace/hooks/sched.h>
-static unsigned int sysctl_sched_pelt_multiplier = 1;
+static unsigned int sysctl_sched_pelt_multiplier = 2; /* 16ms PELT half-life; tunable at runtime */
+
+/*
+ * Android init runs the commands of /vendor and /odm .rc files in a forked
+ * "init subcontext" process (comm "init", parent init), not in pid 1.
+ */
+static bool pelt_writer_is_init(void)
+{
+	bool ret;
+
+	if (is_global_init(current))
+		return true;
+	if (strcmp(current->comm, "init"))
+		return false;
+
+	rcu_read_lock();
+	ret = is_global_init(rcu_dereference(current->real_parent));
+	rcu_read_unlock();
+
+	return ret;
+}
 
 int sched_pelt_multiplier(const struct ctl_table *table, int write, void *buffer,
 			  size_t *lenp, loff_t *ppos)
@@ -537,6 +557,16 @@ int sched_pelt_multiplier(const struct ctl_table *table, int write, void *buffer
 		goto undo;
 	if (!write)
 		goto done;
+
+	/*
+	 * Pixel's vendor init.<soc>.rc writes 1 here at early-init, which
+	 * would put the half-life back to 32ms right after boot. Ignore a
+	 * downgrade that comes from init. Any other writer, a root shell
+	 * included, can still set 1, so the stock half-life stays available
+	 * for A/B testing without a rebuild.
+	 */
+	if (pelt_writer_is_init() && sysctl_sched_pelt_multiplier < 2)
+		sysctl_sched_pelt_multiplier = 2;
 
 	trace_android_vh_sched_pelt_multiplier(old, sysctl_sched_pelt_multiplier, &ret);
 	if (ret)

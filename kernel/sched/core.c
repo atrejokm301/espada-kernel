@@ -1857,14 +1857,15 @@ static inline void uclamp_rq_dec(struct rq *rq, struct task_struct *p)
 	enum uclamp_id clamp_id;
 
 	/*
-	 * Avoid any overhead until uclamp is actually used by the userspace.
-	 *
-	 * The condition is constructed such that a NOP is generated when
-	 * sched_uclamp_used is disabled.
+	 * ANDROID: no uclamp_is_used() gate here. Enabling sched_uclamp_used
+	 * patches its jump label sites one by one, and the enqueue side is
+	 * patched before the dequeue in __schedule(). A task that wakes and
+	 * sleeps in that window is counted and never released, which leaves
+	 * a bucket count behind for the rest of the uptime (seen on grizzly in
+	 * bucket 11, the value of the vendor early boot boost). A dequeue of a
+	 * task that was never counted is a no-op: uclamp_rq_dec_id() returns
+	 * on !uc_se->active.
 	 */
-	if (!uclamp_is_used())
-		return;
-
 	if (unlikely(!p->sched_class->uclamp_enabled))
 		return;
 
@@ -1873,6 +1874,41 @@ static inline void uclamp_rq_dec(struct rq *rq, struct task_struct *p)
 
 	for_each_clamp_id(clamp_id)
 		uclamp_rq_dec_id(rq, p, clamp_id);
+}
+
+/*
+ * ANDROID: an empty runqueue cannot have tasks in its uclamp buckets, but on
+ * grizzly a count is sometimes left behind (seen: cpu1 UCLAMP_MIN bucket 11,
+ * value 610, tasks 1, for hours, with no task carrying that clamp). That keeps
+ * the CPU's frequency request near max for the rest of the uptime, and pins
+ * its whole cpufreq policy with it. Drop such counts once the runqueue is
+ * empty and say once where it happened, so the leak can be traced.
+ */
+static void uclamp_rq_drop_leaked(struct rq *rq)
+{
+	enum uclamp_id clamp_id;
+
+	lockdep_assert_rq_held(rq);
+
+	for_each_clamp_id(clamp_id) {
+		struct uclamp_rq *uc_rq = &rq->uclamp[clamp_id];
+		bool leaked = false;
+		int b;
+
+		for (b = 0; b < UCLAMP_BUCKETS; b++) {
+			if (likely(!uc_rq->bucket[b].tasks))
+				continue;
+			pr_warn_ratelimited("uclamp: CPU%d %s bucket %d (value %u) kept %lu task(s) on an empty runqueue, dropped\n",
+				     cpu_of(rq), clamp_id == UCLAMP_MIN ? "min" : "max", b,
+				     (unsigned int)uc_rq->bucket[b].value,
+				     (unsigned long)uc_rq->bucket[b].tasks);
+			uc_rq->bucket[b].tasks = 0;
+			leaked = true;
+		}
+		if (unlikely(leaked))
+			WRITE_ONCE(uc_rq->value,
+				   uclamp_rq_max_value(rq, clamp_id, READ_ONCE(uc_rq->value)));
+	}
 }
 
 static inline void uclamp_rq_reinc_id(struct rq *rq, struct task_struct *p,
@@ -2111,6 +2147,7 @@ static void __init init_uclamp(void)
 #else /* !CONFIG_UCLAMP_TASK */
 static inline void uclamp_rq_inc(struct rq *rq, struct task_struct *p, int flags) { }
 static inline void uclamp_rq_dec(struct rq *rq, struct task_struct *p) { }
+static inline void uclamp_rq_drop_leaked(struct rq *rq) { }
 static inline void uclamp_fork(struct task_struct *p) { }
 static inline void uclamp_post_fork(struct task_struct *p) { }
 static inline void init_uclamp(void) { }
@@ -2190,6 +2227,14 @@ inline bool dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 	trace_android_rvh_dequeue_task(rq, p, flags);
 	dequeue_task_result = p->sched_class->dequeue_task(rq, p, flags);
 	trace_android_rvh_after_dequeue_task(rq, p, flags, &dequeue_task_result);
+	/*
+	 * Throttled CFS and RT tasks keep their uclamp counts while they are
+	 * left out of rq->nr_running, so only treat the runqueue as empty
+	 * when neither can be hiding there.
+	 */
+	if (uclamp_is_used() && unlikely(!rq->nr_running) && !rq->rt.rt_nr_running &&
+	    !sched_cfs_bandwidth_used())
+		uclamp_rq_drop_leaked(rq);
 	return dequeue_task_result;
 }
 
@@ -3510,6 +3555,7 @@ void set_task_cpu(struct task_struct *p, unsigned int new_cpu)
 {
 #ifdef CONFIG_SCHED_DEBUG
 	unsigned int state = READ_ONCE(p->__state);
+	bool proxy_migrated = sched_proxy_exec() && task_cpu(p) != p->wake_cpu;
 
 	/*
 	 * We should never call set_task_cpu() on a blocked task,
@@ -3545,7 +3591,12 @@ void set_task_cpu(struct task_struct *p, unsigned int new_cpu)
 	 */
 	WARN_ON_ONCE(!cpu_online(new_cpu));
 
-	WARN_ON_ONCE(is_migration_disabled(p));
+	/*
+	 * Proxy execution can move a blocked task's scheduling context to any
+	 * CPU without moving its migration-disabled execution context. The
+	 * wakeup path will return the task to a CPU where it can execute.
+	 */
+	WARN_ON_ONCE(is_migration_disabled(p) && !proxy_migrated);
 #endif
 
 	trace_sched_migrate_task(p, new_cpu);
@@ -4002,7 +4053,12 @@ static void do_activate_blocked_waiter(struct rq *target_rq, struct task_struct 
 			delayacct_blkio_end(p);
 			atomic_dec(&task_rq(p)->nr_iowait);
 		}
-		proxy_set_task_cpu(p, target_cpu);
+
+		if (task_cpu(p) != target_cpu) {
+			en_flags |= ENQUEUE_MIGRATED;
+			psi_ttwu_dequeue(p);
+			proxy_set_task_cpu(p, target_cpu);
+		}
 		rq_lock_irqsave(target_rq, &rf);
 		/*
 		 * proxy_enqueue_on_owner() called block_task() which
@@ -6325,8 +6381,8 @@ void sched_tick(void)
 {
 	int cpu = smp_processor_id();
 	struct rq *rq = cpu_rq(cpu);
-	/* accounting goes to the donor task */
-	struct task_struct *donor;
+	/* scheduler accounting goes to the donor task */
+	struct task_struct *curr, *donor;
 	struct rq_flags rf;
 	unsigned long hw_pressure;
 	u64 resched_latency;
@@ -6337,9 +6393,10 @@ void sched_tick(void)
 	sched_clock_tick();
 
 	rq_lock(rq, &rf);
+	curr = rq->curr;
 	donor = rq->donor;
 
-	psi_account_irqtime(rq, donor, NULL);
+	psi_account_irqtime(rq, curr, NULL);
 
 	update_rq_clock(rq);
 	trace_android_rvh_tick_entry(rq);
@@ -6360,8 +6417,8 @@ void sched_tick(void)
 
 	perf_event_task_tick();
 
-	if (donor->flags & PF_WQ_WORKER)
-		wq_worker_tick(donor);
+	if (curr->flags & PF_WQ_WORKER)
+		wq_worker_tick(curr);
 
 #ifdef CONFIG_SMP
 	if (!scx_switched_all()) {
@@ -8261,6 +8318,17 @@ void rt_mutex_pre_schedule(void)
 	sched_submit_work(current);
 }
 
+/*
+ * Used within the futex syscall context, skips sched_submit_work() because none
+ * its work will be done. Asserts ensure that it is indeed the case.
+ */
+void rt_mutex_futex_pre_schedule(void)
+{
+	lockdep_assert(!(current->flags & (PF_WQ_WORKER | PF_IO_WORKER)));
+	lockdep_assert(!current->plug);
+	lockdep_assert(!fetch_and_set(current->sched_rt_mutex, 1));
+}
+
 void rt_mutex_schedule(void)
 {
 	lockdep_assert(current->sched_rt_mutex);
@@ -8270,6 +8338,11 @@ void rt_mutex_schedule(void)
 void rt_mutex_post_schedule(void)
 {
 	sched_update_worker(current);
+	lockdep_assert(fetch_and_set(current->sched_rt_mutex, 0));
+}
+
+void rt_mutex_futex_post_schedule(void)
+{
 	lockdep_assert(fetch_and_set(current->sched_rt_mutex, 0));
 }
 
@@ -8343,7 +8416,7 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 	trace_sched_pi_setprio(p, pi_task);
 	oldprio = p->prio;
 
-	if (oldprio == prio)
+	if (oldprio == prio && !dl_prio(prio))
 		queue_flag &= ~DEQUEUE_MOVE;
 
 	prev_class = p->sched_class;

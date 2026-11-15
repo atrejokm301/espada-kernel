@@ -4,6 +4,7 @@
 
 #include <linux/init.h>
 #include <linux/dcache.h>
+#include <linux/android_kabi.h>
 
 struct utf8data;
 struct utf8data_table;
@@ -51,7 +52,11 @@ struct unicode_map {
 	unsigned int version;
 	const struct utf8data *ntab[UTF8_NMAX];
 	const struct utf8data_table *tables;
+	/* ANDROID: KABI: added by 6.12.115 69a0d6b31d05, built-in utf8-core.c only */
+	ANDROID_KABI_IGNORE(1, struct rcu_head rcu);
 };
+/* ANDROID: KABI: the hidden rcu_head grows the struct, which only utf8-core.c allocates */
+ANDROID_KABI_BYTE_SIZE(unicode_map, 32);
 
 int utf8_validate(const struct unicode_map *um, const struct qstr *str);
 

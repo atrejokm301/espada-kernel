@@ -888,6 +888,12 @@ static inline void __min_slice_update(struct sched_entity *se, struct rb_node *n
 	}
 }
 
+static inline void min_vruntime_copy(struct sched_entity *new, struct sched_entity *old)
+{
+	new->min_vruntime = old->min_vruntime;
+	new->min_slice = old->min_slice;
+}
+
 /*
  * se->min_vruntime = min(se->vruntime, {left,right}->min_vruntime)
  */
@@ -909,8 +915,9 @@ static inline bool min_vruntime_update(struct sched_entity *se, bool exit)
 	       se->min_slice == old_min_slice;
 }
 
-RB_DECLARE_CALLBACKS(static, min_vruntime_cb, struct sched_entity,
-		     run_node, min_vruntime, min_vruntime_update);
+
+RB_DECLARE_CALLBACKS_MULTI(static, min_vruntime_cb, struct sched_entity,
+		     run_node, min_vruntime_copy, min_vruntime_update);
 
 /*
  * Enqueue an entity into the rb-tree:
@@ -1268,7 +1275,6 @@ static s64 update_se(struct rq *rq, struct sched_entity *se)
 
 	se->exec_start = now;
 	if (entity_is_task(se)) {
-		struct task_struct *donor = task_of(se);
 		struct task_struct *running = rq->curr;
 		/*
 		 * If se is a task, we account the time against the running
@@ -1280,8 +1286,7 @@ static s64 update_se(struct rq *rq, struct sched_entity *se)
 		trace_sched_stat_runtime(running, delta_exec);
 		account_group_exec_runtime(running, delta_exec);
 
-		/* cgroup time is always accounted against the donor */
-		cgroup_account_cputime(donor, delta_exec);
+		cgroup_account_cputime(running, delta_exec);
 	} else {
 		/* If not task, account the time against donor se  */
 		se->sum_exec_runtime += delta_exec;
@@ -2817,7 +2822,7 @@ static void update_task_scan_period(struct task_struct *p,
 		p->mm->numa_next_scan = jiffies +
 			msecs_to_jiffies(p->numa_scan_period);
 
-		return;
+		goto out;
 	}
 
 	/*
@@ -2861,7 +2866,10 @@ static void update_task_scan_period(struct task_struct *p,
 
 	p->numa_scan_period = clamp(p->numa_scan_period + diff,
 			task_scan_min(p), task_scan_max(p));
-	memset(p->numa_faults_locality, 0, sizeof(p->numa_faults_locality));
+
+out:
+	memset(p->numa_faults_locality, 0,
+	       sizeof(p->numa_faults_locality));
 }
 
 /*
@@ -3989,12 +3997,18 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight)
 {
 	bool curr = cfs_rq->curr == se;
+	bool rel_vprot = false;
 	u64 avruntime;
+	u64 vprot = 0;
 
 	if (se->on_rq) {
 		/* commit outstanding execution time */
 		update_curr(cfs_rq);
 		avruntime = avg_vruntime(cfs_rq);
+		if (curr && protect_slice(se)) {
+			vprot = se->vprot - se->vruntime;
+			rel_vprot = true;
+		}
 		if (!curr)
 			__dequeue_entity(cfs_rq, se);
 		update_load_sub(&cfs_rq->load, se->load.weight);
@@ -4004,7 +4018,12 @@ static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 	trace_android_vh_reweight_entity(se, &weight);
 
 	if (se->on_rq) {
+		/* the protected span is relative to vruntime: scale it too */
+		if (rel_vprot)
+			vprot = div_s64(vprot * se->load.weight, weight);
 		reweight_eevdf(se, avruntime, weight);
+		if (rel_vprot)
+			se->vprot = se->vruntime + vprot;
 	} else {
 		/*
 		 * Because we keep se->vlag = V - v_i, while: lag_i = w_i*(V - v_i),
@@ -4757,7 +4776,9 @@ static inline void migrate_se_pelt_lag(struct sched_entity *se)
 		 */
 		now = lut;
 	else
-		now += sched_clock_cpu(cpu_of(rq)) - u64_u32_load(rq->clock_idle);
+		/* rq_idle_lag is wall time; the PELT clock runs at the multiplier */
+		now += (sched_clock_cpu(cpu_of(rq)) - u64_u32_load(rq->clock_idle)) <<
+		       READ_ONCE(sched_pelt_lshift);
 
 	__update_load_avg_blocked_se(now, se);
 }
@@ -5739,7 +5760,8 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	return true;
 }
 
-void set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+static void
+__set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, bool first)
 {
 	clear_buddies(cfs_rq, se);
 
@@ -5754,7 +5776,8 @@ void set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		__dequeue_entity(cfs_rq, se);
 		update_load_avg(cfs_rq, se, UPDATE_TG);
 
-		set_protect_slice(cfs_rq, se);
+		if (first)
+			set_protect_slice(cfs_rq, se);
 	}
 
 	update_stats_curr_start(cfs_rq, se);
@@ -5777,6 +5800,12 @@ void set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	}
 
 	se->prev_sum_exec_runtime = se->sum_exec_runtime;
+}
+
+/* Exported for vendor modules; a pick, so (re)arm slice protection. */
+void set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+	__set_next_entity(cfs_rq, se, true);
 }
 EXPORT_SYMBOL_GPL(set_next_entity);
 
@@ -6995,6 +7024,16 @@ bool cfs_task_bw_constrained(struct task_struct *p)
 }
 #endif
 #endif /* CONFIG_CFS_BANDWIDTH */
+
+/*
+ * ANDROID: throttled tasks keep their uclamp counts while rq->nr_running drops,
+ * so the uclamp leak self-heal in core.c must not run while CFS bandwidth is
+ * in use.
+ */
+bool sched_cfs_bandwidth_used(void)
+{
+	return cfs_bandwidth_used();
+}
 
 #if !defined(CONFIG_CFS_BANDWIDTH) || !defined(CONFIG_NO_HZ_FULL)
 static inline void sched_fair_update_stop_tick(struct rq *rq, struct task_struct *p) {}
@@ -9569,6 +9608,7 @@ struct lb_env {
 
 	int			dst_cpu;
 	struct rq		*dst_rq;
+	bool			dst_core_idle;
 
 	struct cpumask		*dst_grpmask;
 	int			new_dst_cpu;
@@ -10788,11 +10828,17 @@ static bool update_sd_pick_busiest(struct lb_env *env,
 	 * We can use max_capacity here as reduction in capacity on some
 	 * CPUs in the group should either be possible to resolve
 	 * internally or be covered by avg_load imbalance (eventually).
+	 *
+	 * When SMT is active, only pull a misfit to dst_cpu if it is on a
+	 * fully idle core; otherwise the effective capacity of the core is
+	 * reduced and we may not actually provide more capacity than the
+	 * source.
 	 */
 	if ((env->sd->flags & SD_ASYM_CPUCAPACITY) &&
 	    (sgs->group_type == group_misfit_task) &&
 	    (sgs->group_misfit_reason == MISFIT_PERF) &&
-	    (!capacity_greater(capacity_of(env->dst_cpu), sg->sgc->max_capacity) ||
+	    (!env->dst_core_idle ||
+	     !capacity_greater(capacity_of(env->dst_cpu), sg->sgc->max_capacity) ||
 	     sds->local_stat.group_type != group_has_spare))
 		return false;
 
@@ -11003,7 +11049,7 @@ static inline void update_sg_wakeup_stats(struct sched_domain *sd,
 	if (sd->flags & SD_ASYM_CPUCAPACITY)
 		sgs->group_misfit_task_load = 1;
 
-	for_each_cpu(i, sched_group_span(group)) {
+	for_each_cpu_and(i, sched_group_span(group), p->cpus_ptr) {
 		struct rq *rq = cpu_rq(i);
 		misfit_reason_t reason;
 		unsigned int local;
@@ -11366,6 +11412,8 @@ static inline void update_sd_lb_stats(struct lb_env *env, struct sd_lb_stats *sd
 	struct sg_lb_stats tmp_sgs;
 	unsigned long sum_util = 0;
 	bool sg_overloaded = 0, sg_overutilized = 0;
+
+	env->dst_core_idle = !sched_smt_active() || is_core_idle(env->dst_cpu);
 
 	do {
 		struct sg_lb_stats *sgs = &tmp_sgs;
@@ -13662,7 +13710,7 @@ static void set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
 	for_each_sched_entity(se) {
 		struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
-		set_next_entity(cfs_rq, se);
+		__set_next_entity(cfs_rq, se, first);
 		/* ensure bandwidth has been allocated on our new cfs_rq */
 		account_cfs_rq_runtime(cfs_rq, 0);
 	}

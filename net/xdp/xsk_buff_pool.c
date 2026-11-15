@@ -44,10 +44,12 @@ void xp_destroy(struct xsk_buff_pool *pool)
 	kvfree(pool);
 }
 
-int xp_alloc_tx_descs(struct xsk_buff_pool *pool, struct xdp_sock *xs)
+int xp_alloc_tx_descs(struct xsk_buff_pool *pool, struct xdp_sock *xs,
+		      u32 max_segs)
 {
-	pool->tx_descs = kvcalloc(xs->tx->nentries, sizeof(*pool->tx_descs),
-				  GFP_KERNEL);
+	u32 nentries = max(xs->tx->nentries, max_segs);
+
+	pool->tx_descs = kvcalloc(nentries, sizeof(*pool->tx_descs), GFP_KERNEL);
 	if (!pool->tx_descs)
 		return -ENOMEM;
 
@@ -55,7 +57,8 @@ int xp_alloc_tx_descs(struct xsk_buff_pool *pool, struct xdp_sock *xs)
 }
 
 struct xsk_buff_pool *xp_create_and_assign_umem(struct xdp_sock *xs,
-						struct xdp_umem *umem)
+						struct xdp_umem *umem,
+						u32 max_segs)
 {
 	bool unaligned = umem->flags & XDP_UMEM_UNALIGNED_CHUNK_FLAG;
 	struct xsk_buff_pool *pool;
@@ -72,7 +75,7 @@ struct xsk_buff_pool *xp_create_and_assign_umem(struct xdp_sock *xs,
 		goto out;
 
 	if (xs->tx)
-		if (xp_alloc_tx_descs(pool, xs))
+		if (xp_alloc_tx_descs(pool, xs, max_segs))
 			goto out;
 
 	pool->chunk_mask = ~((u64)umem->chunk_size - 1);
@@ -168,6 +171,7 @@ int xp_assign_dev(struct xsk_buff_pool *pool,
 {
 	u32 needed = netdev->mtu + ETH_PAD_LEN;
 	u32 segs = netdev->xdp_zc_max_segs;
+	u8 umem_flags = pool->umem->flags;
 	bool mbuf = flags & XDP_USE_SG;
 	bool force_zc, force_copy;
 	struct netdev_bpf bpf;
@@ -261,6 +265,7 @@ err_unreg_pool:
 	if (!force_zc)
 		err = 0; /* fallback to copy mode */
 	if (err) {
+		pool->umem->flags = umem_flags;
 		xsk_clear_pool_at_qid(netdev, queue_id);
 		dev_put(netdev);
 	}
@@ -443,8 +448,10 @@ static int xp_init_dma_info(struct xsk_buff_pool *pool, struct xsk_dma_map *dma_
 
 		for (i = 0; i < pool->heads_cnt; i++) {
 			struct xdp_buff_xsk *xskb = &pool->heads[i];
+			u64 orig_addr;
 
-			xp_init_xskb_dma(xskb, pool, dma_map->dma_pages, xskb->orig_addr);
+			orig_addr = xskb->xdp.data_hard_start - pool->addrs - pool->headroom;
+			xp_init_xskb_dma(xskb, pool, dma_map->dma_pages, orig_addr);
 		}
 	}
 

@@ -587,7 +587,7 @@ static inline void memcg_rstat_updated(struct mem_cgroup *memcg, int val)
 	if (!val)
 		return;
 
-	cgroup_rstat_updated(memcg->css.cgroup, cpu);
+	__cgroup_rstat_updated(memcg->css.cgroup, cpu);
 	statc = this_cpu_ptr(memcg->vmstats_percpu);
 	for (; statc; statc = statc->parent) {
 		stats_updates = READ_ONCE(statc->stats_updates) + abs(val);
@@ -1803,7 +1803,12 @@ static bool consume_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 	stock = this_cpu_ptr(&memcg_stock);
 	stock_pages = READ_ONCE(stock->nr_pages);
 	if (memcg == READ_ONCE(stock->cached) && stock_pages >= nr_pages) {
-		WRITE_ONCE(stock->nr_pages, stock_pages - nr_pages);
+		stock_pages -= nr_pages;
+		WRITE_ONCE(stock->nr_pages, stock_pages);
+		if (!stock_pages) {
+			css_put(&memcg->css);
+			WRITE_ONCE(stock->cached, NULL);
+		}
 		ret = true;
 	}
 
@@ -2274,6 +2279,19 @@ retry:
 		goto nomem;
 
 	if (!gfpflags_allow_blocking(gfp_mask))
+		goto nomem;
+
+	/*
+	 * OOM victim still needs to charge memory to exit. OOM reaper should
+	 * help but it might fail on mmap_lock contention. If the victim is a
+	 * large thread group then all exiting threads might compete on oom_lock
+	 * just to learn that there is nothing really killable anymore. Bail
+	 * out early and fail the charge to expedite their exit. They are
+	 * considered fully reclaimed by the oom reaper and they shouldn't
+	 * contribute further charges.
+	 */
+	if (tsk_is_oom_victim(current) &&
+	    test_bit(MMF_OOM_SKIP, &current->signal->oom_mm->flags))
 		goto nomem;
 
 	memcg_memory_event(mem_over_limit, MEMCG_MAX);
@@ -4157,6 +4175,9 @@ static ssize_t memory_high_write(struct kernfs_open_file *of,
 		unsigned long nr_pages = page_counter_read(&memcg->memory);
 		unsigned long reclaimed;
 
+		if (high != READ_ONCE(memcg->memory.high))
+			break;
+
 		if (nr_pages <= high)
 			break;
 
@@ -4204,6 +4225,9 @@ static ssize_t memory_max_write(struct kernfs_open_file *of,
 
 	for (;;) {
 		unsigned long nr_pages = page_counter_read(&memcg->memory);
+
+		if (max != READ_ONCE(memcg->memory.max))
+			break;
 
 		if (nr_pages <= max)
 			break;

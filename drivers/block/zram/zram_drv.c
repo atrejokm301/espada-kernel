@@ -1264,8 +1264,10 @@ int zram_prefetch_slots(struct zram *zram, struct zram_pp_ctl *ctl)
 
 		if (!page) {
 			page = alloc_page(GFP_KERNEL);
-			if (!page)
-				return -ENOMEM;
+			if (!page) {
+				ret = -ENOMEM;
+				break;
+			}
 		}
 
 		/* Read the page from backing device and restore to zram */
@@ -1543,8 +1545,8 @@ static ssize_t writeback_store(struct device *dev,
 			       const char *buf, size_t len)
 {
 	struct zram *zram = dev_to_zram(dev);
-	u64 nr_pages = zram->disksize >> PAGE_SHIFT;
-	unsigned long lo = 0, hi = nr_pages;
+	u64 nr_pages;
+	unsigned long lo = 0, hi;
 	struct zram_pp_ctl *pp_ctl = NULL;
 	struct zram_wb_ctl *wb_ctl = NULL;
 	char *args, *param, *val;
@@ -1567,6 +1569,9 @@ static ssize_t writeback_store(struct device *dev,
 		ret = -ENODEV;
 		goto release_init_lock;
 	}
+
+	nr_pages = zram->disksize >> PAGE_SHIFT;
+	hi = nr_pages;
 
 	pp_ctl = init_pp_ctl();
 	if (!pp_ctl) {
@@ -1870,7 +1875,7 @@ static ssize_t read_block_state(struct file *file, char __user *buf,
 	char *kbuf;
 	ssize_t index, written = 0;
 	struct zram *zram = file->private_data;
-	unsigned long nr_pages = zram->disksize >> PAGE_SHIFT;
+	unsigned long nr_pages;
 	struct timespec64 ts;
 
 	kbuf = kvmalloc(count, GFP_KERNEL);
@@ -1883,6 +1888,8 @@ static ssize_t read_block_state(struct file *file, char __user *buf,
 		kvfree(kbuf);
 		return -EINVAL;
 	}
+
+	nr_pages = zram->disksize >> PAGE_SHIFT;
 
 	for (index = *ppos; index < nr_pages; index++) {
 		int copied;
@@ -2046,8 +2053,16 @@ static int comp_params_store(struct zram *zram, u32 prio, s32 level,
 
 	if (dict_path) {
 		sz = read_comp_algo_dictionary(&zram->params[prio].dict, dict_path);
-		if (sz < 0)
+		if (sz < 0) {
+			pr_err("failed to load dictionary %s (err=%zd)\n",
+			       dict_path, sz);
+			return sz;
+		}
+		if (sz == 0) {
+			pr_err("failed to load dictionary %s (empty file)\n",
+			       dict_path);
 			return -EINVAL;
+		}
 	}
 
 	zram->params[prio].dict_sz = sz;
@@ -3255,6 +3270,7 @@ static void zram_destroy_comps(struct zram *zram)
 	}
 
 	zram_comp_params_reset(zram);
+	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
 }
 
 static void zram_reset_device(struct zram *zram)
@@ -3273,8 +3289,6 @@ static void zram_reset_device(struct zram *zram)
 	memset(&zram->stats, 0, sizeof(zram->stats));
 	atomic_set(&zram->pp_in_progress, 0);
 	reset_bdev(zram);
-
-	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
 	up_write(&zram->init_lock);
 }
 

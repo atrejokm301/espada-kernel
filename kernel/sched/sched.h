@@ -1240,7 +1240,7 @@ struct rq {
 	 * one CPU and if it got migrated afterwards it may decrease
 	 * it on another CPU. Always updated under the runqueue lock:
 	 */
-	unsigned long 		nr_uninterruptible;
+	unsigned long		nr_uninterruptible;
 
 #ifdef CONFIG_SCHED_PROXY_EXEC
 	struct task_struct __rcu	*donor;  /* Scheduling context */
@@ -3568,6 +3568,9 @@ static inline unsigned long cpu_util_rt(struct rq *rq)
 #else /* !CONFIG_SMP */
 static inline bool update_other_load_avgs(struct rq *rq) { return false; }
 #endif /* CONFIG_SMP */
+
+/* Used by the uclamp leak self-heal in dequeue_task(), defined in fair.c. */
+extern bool sched_cfs_bandwidth_used(void);
 
 #ifdef CONFIG_UCLAMP_TASK
 

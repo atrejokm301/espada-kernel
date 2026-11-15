@@ -391,8 +391,11 @@ static int f2fs_create(struct mnt_idmap *idmap, struct inode *dir,
 
 	d_instantiate_new(dentry, inode);
 
-	if (IS_DIRSYNC(dir))
-		f2fs_sync_fs(sbi->sb, 1);
+	if (IS_DIRSYNC(dir)) {
+		err = f2fs_sync_fs(sbi->sb, 1);
+		if (err)
+			return err;
+	}
 
 	f2fs_balance_fs(sbi, true);
 	return 0;
@@ -441,8 +444,11 @@ static int f2fs_link(struct dentry *old_dentry, struct inode *dir,
 
 	d_instantiate(dentry, inode);
 
-	if (IS_DIRSYNC(dir))
-		f2fs_sync_fs(sbi->sb, 1);
+	if (IS_DIRSYNC(dir)) {
+		err = f2fs_sync_fs(sbi->sb, 1);
+		if (err)
+			return err;
+	}
 	return 0;
 out:
 	clear_inode_flag(inode, FI_INC_LINK);
@@ -606,8 +612,11 @@ static int f2fs_unlink(struct inode *dir, struct dentry *dentry)
 	if (IS_ENABLED(CONFIG_UNICODE) && IS_CASEFOLDED(dir))
 		d_invalidate(dentry);
 
-	if (IS_DIRSYNC(dir))
-		f2fs_sync_fs(sbi->sb, 1);
+	if (IS_DIRSYNC(dir)) {
+		err = f2fs_sync_fs(sbi->sb, 1);
+		if (err)
+			goto fail;
+	}
 fail:
 	trace_f2fs_unlink_exit(inode, err);
 	return err;
@@ -689,14 +698,15 @@ err_out:
 	 * performance regression.
 	 */
 	if (!err) {
-		filemap_write_and_wait_range(inode->i_mapping, 0,
-							disk_link.len - 1);
+		err = filemap_write_and_wait_range(inode->i_mapping, 0,
+						   disk_link.len - 1);
 
-		if (IS_DIRSYNC(dir))
-			f2fs_sync_fs(sbi->sb, 1);
-	} else {
-		f2fs_unlink(dir, dentry);
+		if (!err && IS_DIRSYNC(dir))
+			err = f2fs_sync_fs(sbi->sb, 1);
 	}
+
+	if (err)
+		f2fs_unlink(dir, dentry);
 
 	f2fs_balance_fs(sbi, true);
 	goto out_free_encrypted_link;
@@ -744,8 +754,11 @@ static int f2fs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 
 	d_instantiate_new(dentry, inode);
 
-	if (IS_DIRSYNC(dir))
-		f2fs_sync_fs(sbi->sb, 1);
+	if (IS_DIRSYNC(dir)) {
+		err = f2fs_sync_fs(sbi->sb, 1);
+		if (err)
+			return err;
+	}
 
 	f2fs_balance_fs(sbi, true);
 	return 0;
@@ -799,8 +812,11 @@ static int f2fs_mknod(struct mnt_idmap *idmap, struct inode *dir,
 
 	d_instantiate_new(dentry, inode);
 
-	if (IS_DIRSYNC(dir))
-		f2fs_sync_fs(sbi->sb, 1);
+	if (IS_DIRSYNC(dir)) {
+		err = f2fs_sync_fs(sbi->sb, 1);
+		if (err)
+			return err;
+	}
 
 	f2fs_balance_fs(sbi, true);
 	return 0;
@@ -1092,8 +1108,11 @@ static int f2fs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 
 	f2fs_unlock_op(sbi, &lc);
 
-	if (IS_DIRSYNC(old_dir) || IS_DIRSYNC(new_dir))
-		f2fs_sync_fs(sbi->sb, 1);
+	if (IS_DIRSYNC(old_dir) || IS_DIRSYNC(new_dir)) {
+		err = f2fs_sync_fs(sbi->sb, 1);
+		if (err)
+			return err;
+	}
 
 	f2fs_update_time(sbi, REQ_TIME);
 	return 0;
@@ -1256,8 +1275,11 @@ static int f2fs_cross_rename(struct inode *old_dir, struct dentry *old_dentry,
 
 	f2fs_unlock_op(sbi, &lc);
 
-	if (IS_DIRSYNC(old_dir) || IS_DIRSYNC(new_dir))
-		f2fs_sync_fs(sbi->sb, 1);
+	if (IS_DIRSYNC(old_dir) || IS_DIRSYNC(new_dir)) {
+		err = f2fs_sync_fs(sbi->sb, 1);
+		if (err)
+			return err;
+	}
 
 	f2fs_update_time(sbi, REQ_TIME);
 	return 0;

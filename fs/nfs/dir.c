@@ -2287,6 +2287,13 @@ int nfs_atomic_open_v23(struct inode *dir, struct dentry *dentry,
 	if (open_flags & O_CREAT) {
 		error = nfs_do_create(dir, dentry, mode, open_flags);
 		if (!error) {
+			/* With UNCHECKED mode, a server may return NFS3_OK for
+			 * a pre-existing non-regular file (e.g. a symlink).
+			 * Let the VFS handle it; calling finish_open() would
+			 * hit no_open() and return -ENXIO.
+			 */
+			if (!d_is_reg(dentry))
+				return finish_no_open(file, NULL);
 			file->f_mode |= FMODE_CREATED;
 			return finish_open(file, dentry, NULL);
 		} else if (error != -EEXIST || open_flags & O_EXCL)
@@ -2639,6 +2646,12 @@ int nfs_symlink(struct mnt_idmap *idmap, struct inode *dir,
 		d_drop(dentry);
 		folio_put(folio);
 		return error;
+	}
+
+	if (unlikely(!d_is_symlink(dentry))) {
+		d_drop(dentry);
+		folio_put(folio);
+		return 0;
 	}
 
 	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));

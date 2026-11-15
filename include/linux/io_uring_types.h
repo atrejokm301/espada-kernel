@@ -18,6 +18,14 @@ enum {
 	 * It's also ignored unless IORING_SETUP_DEFER_TASKRUN is set.
 	 */
 	IOU_F_TWQ_LAZY_WAKE			= 1,
+
+	/*
+	 * Set when task_work is queued from a waitqueue wakeup handler, where
+	 * an arbitrary provider waitqueue lock is held. Signaling the CQ ring
+	 * eventfd inline from there can recurse back into that lock through
+	 * epoll, so the eventfd signal must be deferred.
+	 */
+	IOU_F_TWQ_IN_WAKE			= 2,
 };
 
 enum io_uring_cmd_flags {
@@ -443,6 +451,14 @@ struct io_ring_ctx {
 	unsigned short			n_sqe_pages;
 	struct page			**ring_pages;
 	struct page			**sqe_pages;
+
+	/*
+	 * ANDROID: KABI: added by 6.12.115 d8c618747a6a (deferred ->poll_wq
+	 * wake up for local task_work). Kept in the tail padding so no member
+	 * offset or the struct size changes.
+	 */
+	ANDROID_KABI_IGNORE(9, struct rcu_head poll_wq_rcu);
+	ANDROID_KABI_IGNORE(10, atomic_t poll_wq_rcu_pending);
 };
 
 struct io_tw_state {

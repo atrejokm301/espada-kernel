@@ -1079,7 +1079,8 @@ static void update_dl_entity(struct sched_dl_entity *dl_se)
 	if (dl_time_before(dl_se->deadline, rq_clock(rq)) ||
 	    dl_entity_overflow(dl_se, rq_clock(rq))) {
 
-		if (unlikely((!dl_is_implicit(dl_se) || dl_se->dl_defer) &&
+		if (unlikely((!dl_is_implicit(dl_se) ||
+			      (dl_se->dl_defer && dl_se->dl_defer_running)) &&
 			     !dl_time_before(dl_se->deadline, rq_clock(rq)) &&
 			     !is_dl_boosted(dl_se))) {
 			update_dl_revised_wakeup(dl_se, rq);
@@ -2865,9 +2866,9 @@ static struct task_struct *pick_next_pushable_dl_task(struct rq *rq)
 		 * cpu argument doesn't matter because we treat a -1 result
 		 * (pushable but can't go to cpu0) the same as a 1 result
 		 * (pushable to cpu0). All we care about here is general
-		 * pushability.
+		 * pushability. Skip tasks that cannot be migrated.
 		 */
-		if (task_is_pushable(rq, i, 0)) {
+		if (task_is_pushable(rq, i, 0) && !is_migration_disabled(i)) {
 			p = i;
 			break;
 		}

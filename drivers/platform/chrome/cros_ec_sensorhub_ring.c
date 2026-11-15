@@ -22,7 +22,7 @@
 
 /* Precision of fixed point for the m values from the filter */
 #define M_PRECISION BIT(23)
-#define MAX_DRIFT_PPM 200LL
+#define MAX_DRIFT_PPM 5000LL
 #define MAX_M ((s64)(MAX_DRIFT_PPM * M_PRECISION / 1000000))
 
 /* Only activate the filter once we have at least this many elements. */
@@ -278,7 +278,7 @@ cros_ec_sensor_ring_ts_filter_update(struct cros_ec_sensors_ts_filter_state
 	dy = (state->y_history[0] + state->y_offset) - y;
 	m = div64_s64(dy * M_PRECISION, dx);
 	/*
-	 * Clamp the calculated slope to a realistic range (+/- 200 ppm).
+	 * Clamp the calculated slope to a realistic range (+/- 5000 ppm).
 	 * Temporary large jitter spikes can produce huge slopes (e.g. +/- 20000 ppm)
 	 * that would otherwise corrupt the median filter history.
 	 */
@@ -521,6 +521,21 @@ cros_ec_sensor_ring_process_event(struct cros_ec_sensorhub *sensorhub,
 						  fifo_timestamp,
 						  *current_timestamp,
 						  now);
+
+		/*
+		 * A standalone timestamp event typically has a sensor_num of
+		 * 0xff.  Return early here to prevent it from hitting the
+		 * bounds check below and spamming the logs.
+		 */
+		return false;
+	}
+
+	/* Skip event if sensor_num from EC is out of bounds. */
+	if (in->sensor_num >= sensorhub->sensor_num) {
+		dev_warn_ratelimited(sensorhub->dev,
+				     "Invalid sensor number %u from EC\n",
+				     in->sensor_num);
+		return false;
 	}
 
 	if (in->flags & MOTIONSENSE_SENSOR_FLAG_ODR) {
@@ -547,10 +562,6 @@ cros_ec_sensor_ring_process_event(struct cros_ec_sensorhub *sensorhub,
 		 */
 		return true;
 	}
-
-	if (in->flags & MOTIONSENSE_SENSOR_FLAG_TIMESTAMP)
-		/* If we just have a timestamp, skip this entry. */
-		return false;
 
 	/* Regular sample */
 	out->sensor_id = in->sensor_num;
@@ -873,8 +884,15 @@ static void cros_ec_sensorhub_ring_handler(struct cros_ec_sensorhub *sensorhub)
 		sensorhub->msg->outsize = 1;
 		sensorhub->msg->insize = fifo_info_length;
 
-		if (cros_ec_cmd_xfer_status(ec->ec_dev, sensorhub->msg) < 0)
+		ret = cros_ec_cmd_xfer_status(ec->ec_dev, sensorhub->msg);
+		if (ret < 0)
 			goto error;
+		if (ret != fifo_info_length) {
+			dev_warn_ratelimited(sensorhub->dev,
+					     "Mismatch read length: size %d - expected %d\n",
+					     ret, fifo_info_length);
+			goto error;
+		}
 
 		memcpy(fifo_info, &sensorhub->resp->fifo_info,
 		       fifo_info_length);

@@ -228,7 +228,7 @@ static const struct irq_domain_ops dw_pcie_msi_domain_ops = {
 int dw_pcie_allocate_domains(struct dw_pcie_rp *pp)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
-	struct fwnode_handle *fwnode = of_node_to_fwnode(pci->dev->of_node);
+	struct fwnode_handle *fwnode = dev_fwnode(pci->dev);
 
 	pp->irq_domain = irq_domain_create_linear(fwnode, pp->num_vectors,
 					       &dw_pcie_msi_domain_ops, pp);
@@ -887,6 +887,14 @@ int dw_pcie_setup_rc(struct dw_pcie_rp *pp)
 	dw_pcie_writel_dbi(pci, PCIE_LINK_WIDTH_SPEED_CONTROL, val);
 
 	dw_pcie_dbi_ro_wr_dis(pci);
+
+	/*
+	 * Keep the Root Port MSI/MSI-X capabilities as the October Pixel
+	 * kernel does. With them removed, Root Port PME/AER move to INTx and
+	 * start firing; on malibu the PME handler then touches the Wi-Fi
+	 * endpoint while google-pcie is powering the link down, and the
+	 * access ends in a WLAN fabric timeout (reset reason 0xc016).
+	 */
 
 	return 0;
 }

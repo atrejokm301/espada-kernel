@@ -923,7 +923,7 @@ __get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
 
 	if (get_area) {
 		addr = get_area(file, addr, len, pgoff, flags);
-	} else if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE)
+	} else if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && !file
 		   && !addr /* no hint */
 		   && IS_ALIGNED(len, PMD_SIZE)) {
 		/* Ensures that larger anonymous mappings are THP aligned. */
@@ -1723,7 +1723,7 @@ SYSCALL_DEFINE5(remap_file_pages, unsigned long, start, unsigned long, size,
 	 */
 	vma = vma_lookup(mm, start);
 
-	if (!vma || !(vma->vm_flags & VM_SHARED)) {
+	if (!vma || !(vma->vm_flags & VM_SHARED) || vma->vm_flags & VM_NO_REMAP_FILE_PAGES) {
 		mmap_read_unlock(mm);
 		return -EINVAL;
 	}
